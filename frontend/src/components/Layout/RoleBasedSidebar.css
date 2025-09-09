@@ -1,0 +1,240 @@
+/* Modern animations and styling for RoleBasedSidebar */
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* Apply subtle animations to sidebar elements */
+.sidebar-item { 
+  animation: fadeIn 0.2s ease-out; 
+}
+
+.sidebar-group { 
+  animation: slideIn 0.3s ease-out; 
+}
+
+.sidebar-header { 
+  animation: fadeIn 0.1s ease-out; 
+}
+
+.sidebar-search { 
+  animation: slideIn 0.2s ease-out; 
+}
+
+.sidebar-user { 
+  animation: slideIn 0.3s ease-out; 
+}
+
+.sidebar-footer { 
+  animation: slideIn 0.4s ease-out; 
+}
+
+/* Subtle hover effects */
+.sidebar-item:hover { 
+  transform: translateX(2px); 
+  transition: transform 0.15s ease-out; 
+}
+
+.sidebar-icon { 
+  transition: transform 0.15s ease-out; 
+}
+
+.sidebar-item:hover .sidebar-icon { 
+  transform: scale(1.05); 
+}
+
+/* Active state styling */
+.sidebar-item-active {
+  position: relative;
+  overflow: hidden;
+}
+
+.sidebar-item-active::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(45deg, transparent 30%, rgba(255, 255, 255, 0.1) 50%, transparent 70%);
+  transform: translateX(-100%);
+  transition: transform 0.6s ease;
+}
+
+.sidebar-item-active:hover::before {
+  transform: translateX(100%);
+}
+
+/* Loading shimmer effect */
+.sidebar-loading {
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200px 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200px 0; }
+  100% { background-position: calc(200px + 100%) 0; }
+}
+
+/* Text utilities */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Scroll area styling */
+.sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.4) rgba(0, 0, 0, 0.1);
+  overflow-y: auto !important;
+  max-height: calc(100vh - 300px);
+}
+
+.sidebar-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 3px;
+  margin: 2px 0;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.3));
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  min-height: 20px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0.4));
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb:active {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0.5));
+}
+
+/* Force scrollbar to be visible */
+.sidebar-scroll {
+  scrollbar-gutter: stable;
+}
+
+/* Responsive animations */
+@media (max-width: 768px) {
+  .sidebar-item { animation-duration: 0.2s; }
+  .sidebar-group { animation-duration: 0.3s; }
+}
+
+/* Dark mode adjustments */
+@media (prefers-color-scheme: dark) {
+  .sidebar-loading {
+    background: linear-gradient(90deg, #2a2a2a 25%, #3a3a3a 50%, #2a2a2a 75%);
+  }
+  
+  .sidebar-scroll {
+    scrollbar-color: rgba(255, 255, 255, 0.4) rgba(255, 255, 255, 0.1);
+  }
+  
+  .sidebar-scroll::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.08);
+  }
+  
+  .sidebar-scroll::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.4), rgba(255, 255, 255, 0.3));
+    border: 1px solid rgba(0, 0, 0, 0.2);
+  }
+  
+  .sidebar-scroll::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.4));
+  }
+  
+  .sidebar-scroll::-webkit-scrollbar-thumb:active {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0.5));
+  }
+  
+  /* Dark mode tooltip styling */
+  [data-radix-tooltip-content] {
+    background: hsl(var(--popover)) !important;
+    color: hsl(var(--popover-foreground)) !important;
+    border: 1px solid hsl(var(--border)) !important;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.2) !important;
+  }
+  
+  [data-radix-tooltip-content] p {
+    color: hsl(var(--popover-foreground)) !important;
+  }
+  
+  [data-radix-tooltip-content] .text-muted-foreground {
+    color: hsl(var(--muted-foreground)) !important;
+  }
+}
+
+/* Focus states for accessibility */
+.sidebar-item:focus-visible {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 2px;
+}
+
+/* Smooth transitions for all interactive elements */
+.sidebar-item,
+.sidebar-icon,
+.sidebar-group,
+.sidebar-header,
+.sidebar-user,
+.sidebar-footer {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Enhanced tooltip styling */
+.sidebar-item [data-radix-tooltip-trigger] {
+  transition: all 0.2s ease;
+}
+
+/* Tooltip content styling for better visibility */
+[data-radix-tooltip-content] {
+  background: hsl(var(--popover)) !important;
+  color: hsl(var(--popover-foreground)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05) !important;
+  z-index: 50 !important;
+}
+
+[data-radix-tooltip-content] p {
+  color: hsl(var(--popover-foreground)) !important;
+}
+
+[data-radix-tooltip-content] .text-muted-foreground {
+  color: hsl(var(--muted-foreground)) !important;
+}
+
+/* Group header accent styling */
+.sidebar-group h3 {
+  position: relative;
+}
+
+.sidebar-group h3::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  width: 20px;
+  height: 2px;
+  background: linear-gradient(90deg, hsl(var(--primary)), transparent);
+  border-radius: 1px;
+}
