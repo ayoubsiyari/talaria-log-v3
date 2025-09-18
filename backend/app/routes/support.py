@@ -21,6 +21,7 @@ from ..models.rbac import AdminUser
 from ..models.user import User
 from .. import db
 from ..services.ai_service import ai_service
+from ..services.realtime_chat_service import realtime_chat_service
 # Simple admin permission decorator
 def require_admin_permission(permission=None):
     def decorator(f):
@@ -449,6 +450,22 @@ def update_ticket(ticket_id):
         ticket.updated_at = datetime.utcnow()
         db.session.commit()
         
+        # Broadcast ticket update in real-time
+        try:
+            update_data = {
+                'status': ticket.status.value if ticket.status else None,
+                'priority': ticket.priority.value if ticket.priority else None,
+                'assigned_to': ticket.assigned_to,
+                'category_id': ticket.category_id,
+                'resolved_at': ticket.resolved_at.isoformat() if ticket.resolved_at else None,
+                'closed_at': ticket.closed_at.isoformat() if ticket.closed_at else None
+            }
+            realtime_chat_service.broadcast_ticket_update(ticket_id, 'ticket_updated', update_data)
+            logger.info(f"Broadcasted ticket update for ticket {ticket_id}")
+        except Exception as e:
+            logger.error(f"Error broadcasting ticket update: {e}")
+            # Don't fail the request if broadcasting fails
+        
         return jsonify({
             'success': True,
             'message': 'Ticket updated successfully',
@@ -545,6 +562,16 @@ def add_message(ticket_id):
         
         ticket.updated_at = datetime.utcnow()
         db.session.commit()
+        
+        # Broadcast new message in real-time
+        try:
+            message_data = message.to_dict()
+            message_data['is_admin_reply'] = is_admin_reply
+            realtime_chat_service.broadcast_new_message(ticket_id, message_data)
+            logger.info(f"Broadcasted new message for ticket {ticket_id}")
+        except Exception as e:
+            logger.error(f"Error broadcasting message: {e}")
+            # Don't fail the request if broadcasting fails
         
         return jsonify({
             'success': True,

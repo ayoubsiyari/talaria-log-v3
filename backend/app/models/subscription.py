@@ -11,10 +11,10 @@ import enum
 
 class BillingCycle(enum.Enum):
     """Billing cycle options"""
-    MONTHLY = "monthly"
-    QUARTERLY = "quarterly"
-    ANNUALLY = "annually"
-    BIENNIALLY = "biennially"
+    MONTHLY = "MONTHLY"
+    QUARTERLY = "QUARTERLY"
+    ANNUALLY = "ANNUALLY"
+    BIENNIALLY = "BIENNIALLY"
 
 class SubscriptionStatus(enum.Enum):
     """Subscription status options"""

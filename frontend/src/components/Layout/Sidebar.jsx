@@ -117,7 +117,7 @@ export default function Sidebar({ activeItem, onItemClick, collapsed, onToggleCo
                         className={`w-full justify-start text-sidebar-foreground hover:bg-sidebar-accent ${
                           collapsed ? 'px-2' : 'px-3'
                         } ${isActive ? 'bg-sidebar-accent text-sidebar-accent-foreground' : ''}`}
-                        onClick={() => onItemClick(item.id)}
+                        onClick={() => onItemClick(item.id, item.path || undefined)}
                         title={collapsed ? item.label : undefined}
                       >
                         <Icon className={`w-5 h-5 ${collapsed ? '' : 'mr-3'}`} />

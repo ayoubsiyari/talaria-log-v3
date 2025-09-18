@@ -20,6 +20,7 @@ const SubscriptionSelection = lazy(() => import('./pages/SubscriptionSelection')
 const Checkout = lazy(() => import('./pages/Checkout'))
 const SubscriptionSuccess = lazy(() => import('./pages/SubscriptionSuccess'))
 const Invoice = lazy(() => import('./pages/Invoice'))
+const PaymentDashboard = lazy(() => import('./pages/PaymentDashboard'))
 
 // Emergency Fix Components
 const OneClickFix = lazy(() => import('./components/Test/OneClickFix'))
@@ -529,6 +530,7 @@ function App() {
             } 
           />
 
+
           {/* Invoice Page */}
           <Route 
             path="/invoice/:orderId" 
@@ -545,6 +547,17 @@ function App() {
             element={<Navigate to="/subscription/select" replace />} 
           />
 
+          {/* Payment Dashboard - Admin Only */}
+          <Route 
+            path="/payment-dashboard" 
+            element={
+              <AdminRoute>
+                <Suspense fallback={<div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white text-lg">Loading Payment Dashboard...</div>}>
+                  <PaymentDashboard />
+                </Suspense>
+              </AdminRoute>
+            } 
+          />
           
           {/* Protected Routes */}
           <Route 

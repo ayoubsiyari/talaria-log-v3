@@ -498,7 +498,7 @@ def get_subscription_statistics():
 def get_all_plans():
     """Get all subscription plans for admin management"""
     try:
-        plans = SubscriptionPlan.query.all()
+        plans = SubscriptionPlan.query.order_by(SubscriptionPlan.sort_order, SubscriptionPlan.name).all()
         
         available_plans = []
         for plan in plans:
@@ -509,9 +509,17 @@ def get_all_plans():
                 'price': float(plan.price),
                 'billing_cycle': plan.billing_cycle.value,
                 'features': plan.features,
+                'sidebar_components': plan.sidebar_components,
+                'max_users': plan.max_users,
+                'max_projects': plan.max_projects,
+                'storage_limit': plan.storage_limit,
                 'is_popular': plan.is_popular,
                 'is_active': plan.is_active,
+                'visible_to_regular_users': plan.visible_to_regular_users,
+                'visible_to_admin_users': plan.visible_to_admin_users,
+                'sort_order': plan.sort_order,
                 'trial_days': plan.trial_days,
+                'trial_price': float(plan.trial_price) if plan.trial_price else 0.0,
                 'created_at': plan.created_at.isoformat() if plan.created_at else None,
                 'updated_at': plan.updated_at.isoformat() if plan.updated_at else None
             })
@@ -540,11 +548,19 @@ def create_plan():
             name=data['name'],
             description=data.get('description', ''),
             price=float(data['price']),
-            billing_cycle=data.get('billing_cycle', 'monthly'),
+            billing_cycle=data.get('billing_cycle', 'MONTHLY'),
             features=data.get('features', []),
+            sidebar_components=data.get('sidebar_components', []),
+            max_users=data.get('max_users'),
+            max_projects=data.get('max_projects'),
+            storage_limit=data.get('storage_limit'),
             is_popular=data.get('is_popular', False),
             is_active=data.get('is_active', True),
-            trial_days=data.get('trial_days', 0)
+            visible_to_regular_users=data.get('visible_to_regular_users', True),
+            visible_to_admin_users=data.get('visible_to_admin_users', True),
+            sort_order=data.get('sort_order', 0),
+            trial_days=data.get('trial_days', 0),
+            trial_price=float(data.get('trial_price', 0.0))
         )
         
         db.session.add(new_plan)
@@ -556,8 +572,23 @@ def create_plan():
             'plan': {
                 'id': new_plan.id,
                 'name': new_plan.name,
+                'description': new_plan.description,
                 'price': float(new_plan.price),
-                'billing_cycle': new_plan.billing_cycle.value
+                'billing_cycle': new_plan.billing_cycle.value,
+                'features': new_plan.features,
+                'sidebar_components': new_plan.sidebar_components,
+                'max_users': new_plan.max_users,
+                'max_projects': new_plan.max_projects,
+                'storage_limit': new_plan.storage_limit,
+                'is_popular': new_plan.is_popular,
+                'is_active': new_plan.is_active,
+                'visible_to_regular_users': new_plan.visible_to_regular_users,
+                'visible_to_admin_users': new_plan.visible_to_admin_users,
+                'sort_order': new_plan.sort_order,
+                'trial_days': new_plan.trial_days,
+                'trial_price': float(new_plan.trial_price) if new_plan.trial_price else 0.0,
+                'created_at': new_plan.created_at.isoformat() if new_plan.created_at else None,
+                'updated_at': new_plan.updated_at.isoformat() if new_plan.updated_at else None
             }
         }), 201
         
@@ -589,12 +620,28 @@ def update_plan(plan_id):
             plan.billing_cycle = data['billing_cycle']
         if 'features' in data:
             plan.features = data['features']
+        if 'sidebar_components' in data:
+            plan.sidebar_components = data['sidebar_components']
+        if 'max_users' in data:
+            plan.max_users = data['max_users']
+        if 'max_projects' in data:
+            plan.max_projects = data['max_projects']
+        if 'storage_limit' in data:
+            plan.storage_limit = data['storage_limit']
         if 'is_popular' in data:
             plan.is_popular = data['is_popular']
         if 'is_active' in data:
             plan.is_active = data['is_active']
+        if 'visible_to_regular_users' in data:
+            plan.visible_to_regular_users = data['visible_to_regular_users']
+        if 'visible_to_admin_users' in data:
+            plan.visible_to_admin_users = data['visible_to_admin_users']
+        if 'sort_order' in data:
+            plan.sort_order = data['sort_order']
         if 'trial_days' in data:
             plan.trial_days = data['trial_days']
+        if 'trial_price' in data:
+            plan.trial_price = float(data['trial_price'])
         
         plan.updated_at = datetime.utcnow()
         db.session.commit()
@@ -650,6 +697,68 @@ def delete_plan(plan_id):
         db.session.rollback()
         logger.error(f"Error deleting plan: {e}")
         return jsonify({'error': 'Failed to delete plan'}), 500
+
+@admin_user_mgmt_bp.route('/plans/<int:plan_id>/hide', methods=['POST'])
+@jwt_required()
+def hide_plan(plan_id):
+    """Hide a subscription plan from regular users (soft delete)"""
+    try:
+        # Get plan
+        plan = SubscriptionPlan.query.get(plan_id)
+        if not plan:
+            return jsonify({'error': 'Plan not found'}), 404
+        
+        # Hide the plan from regular users
+        plan.visible_to_regular_users = False
+        plan.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Plan "{plan.name}" is now hidden from regular users',
+            'plan': {
+                'id': plan.id,
+                'name': plan.name,
+                'visible_to_regular_users': plan.visible_to_regular_users,
+                'is_active': plan.is_active
+            }
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error hiding plan: {e}")
+        return jsonify({'error': 'Failed to hide plan'}), 500
+
+@admin_user_mgmt_bp.route('/plans/<int:plan_id>/show', methods=['POST'])
+@jwt_required()
+def show_plan(plan_id):
+    """Show a subscription plan to regular users"""
+    try:
+        # Get plan
+        plan = SubscriptionPlan.query.get(plan_id)
+        if not plan:
+            return jsonify({'error': 'Plan not found'}), 404
+        
+        # Show the plan to regular users
+        plan.visible_to_regular_users = True
+        plan.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Plan "{plan.name}" is now visible to regular users',
+            'plan': {
+                'id': plan.id,
+                'name': plan.name,
+                'visible_to_regular_users': plan.visible_to_regular_users,
+                'is_active': plan.is_active
+            }
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error showing plan: {e}")
+        return jsonify({'error': 'Failed to show plan'}), 500
 
 @admin_user_mgmt_bp.route('/users/send-message', methods=['POST'])
 @jwt_required()

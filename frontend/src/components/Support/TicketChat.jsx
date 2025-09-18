@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,7 +14,6 @@ import {
   AlertCircle,
   CheckCircle,
   X,
-  RefreshCw,
   Check,
   CheckCheck,
   Minimize2,
@@ -29,6 +28,7 @@ import {
   FileText,
   Upload,
   Eye,
+  RefreshCw,
   Maximize,
   Minimize,
   Sparkles
@@ -39,6 +39,8 @@ import notificationService from '../../services/notificationService';
 import TicketRatingDialog from './TicketRatingDialog';
 import SmartReplySuggestions from './SmartReplySuggestions';
 import aiService from '../../services/aiService';
+import usePollingChat from '../../hooks/usePollingChat';
+import useRealtimeChat from '../../hooks/useRealtimeChat';
 
 const TicketChat = ({ ticket, onClose, onUpdate }) => {
   const [messages, setMessages] = useState([]);
@@ -61,6 +63,75 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
   const fileInputRef = useRef(null);
   const previewContentRef = useRef(null);
 
+  // Handle new message (shared between SocketIO and polling)
+  const handleNewMessage = useCallback((message, ticketId) => {
+    console.log('TicketChat - New message received via', message, 'for ticket:', ticketId);
+    if (String(ticketId) === String(ticket?.id)) {
+      setMessages(prev => {
+        // Check if message already exists to avoid duplicates
+        const exists = prev.some(m => m.id === message.id);
+        console.log('TicketChat - Message exists check:', exists, 'Current messages:', prev.length);
+        if (exists) return prev;
+        
+        // If this is a real message from server, replace any temporary message with same content
+        const tempMessageIndex = prev.findIndex(m => 
+          String(m.id).startsWith('temp_') && 
+          m.message === message.message && 
+          m.status === 'sent'
+        );
+        
+        if (tempMessageIndex !== -1) {
+          console.log('TicketChat - Replacing temporary message with real message');
+          const newMessages = [...prev];
+          newMessages[tempMessageIndex] = message;
+          return newMessages;
+        }
+        
+        console.log('TicketChat - Adding new message to state');
+        return [...prev, message];
+      });
+      scrollToBottom();
+    }
+  }, [ticket?.id]);
+
+  // Handle ticket updates (shared between SocketIO and polling)
+  const handleTicketUpdate = useCallback((ticketId, updateType, data) => {
+    if (String(ticketId) === String(ticket?.id)) {
+      // Update ticket status in real-time
+      if (onUpdate) {
+        onUpdate(true);
+      }
+      toast.info(`Ticket ${updateType.replace('_', ' ')}`);
+    }
+  }, [ticket?.id, onUpdate]);
+
+  // SocketIO real-time chat (primary)
+  const {
+    isConnected: socketConnected,
+    connectionStatus,
+    joinTicketChat,
+    leaveTicketChat
+  } = useRealtimeChat({
+    onNewMessage: handleNewMessage,
+    onTicketUpdate: handleTicketUpdate,
+    onError: (error) => {
+      console.log('SocketIO error, polling will handle updates:', error);
+    }
+  });
+
+  // Polling-based fallback (secondary)
+  const {
+    isPolling,
+    error: pollingError,
+    startPolling,
+    stopPolling,
+    markMessagesAsRead
+  } = usePollingChat({
+    enabled: true, // Always enabled as fallback
+    onNewMessage: handleNewMessage,
+    onTicketUpdate: handleTicketUpdate
+  });
+
   useEffect(() => {
     if (ticket) {
       loadMessages();
@@ -70,6 +141,13 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
       
       // Check if user is support agent or admin
       const adminUser = JSON.parse(localStorage.getItem('adminUser') || '{}');
+      console.log('TicketChat - Admin user detection:', {
+        adminUser,
+        hasAdminUser: !!adminUser,
+        roles: adminUser?.roles,
+        permissions: adminUser?.permissions
+      });
+      
       const isAgent = adminUser && (
         adminUser.roles?.some(role => 
           role.name === 'support_agent' || 
@@ -81,7 +159,20 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
           permission.name === 'support.tickets.view'
         )
       );
-      setIsSupportAgent(isAgent);
+      
+      console.log('TicketChat - Is support agent:', isAgent);
+      
+      // Fallback: Check if we're in admin dashboard context
+      const isAdminDashboard = window.location.pathname.includes('/dashboard');
+      const isAdminByContext = isAdminDashboard && adminUser && Object.keys(adminUser).length > 0;
+      
+      console.log('TicketChat - Admin context check:', {
+        isAdminDashboard,
+        isAdminByContext,
+        pathname: window.location.pathname
+      });
+      
+      setIsSupportAgent(isAgent || isAdminByContext);
       
       // Mark ticket as read when opened
       markTicketAsRead();
@@ -97,6 +188,40 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
     }
   }, [ticket]);
 
+  // Start/stop both SocketIO and polling when ticket changes
+  useEffect(() => {
+    if (ticket) {
+      console.log('TicketChat - Starting real-time systems for ticket:', ticket.id);
+      
+      // Start SocketIO connection
+      if (socketConnected) {
+        const user = JSON.parse(localStorage.getItem('user') || '{}');
+        const adminUser = JSON.parse(localStorage.getItem('adminUser') || '{}');
+        const userId = adminUser?.id || user?.id;
+        
+        if (userId) {
+          console.log('TicketChat - Joining SocketIO room for ticket:', ticket.id);
+          joinTicketChat(ticket.id, userId);
+        }
+      } else {
+        console.log('TicketChat - SocketIO not connected, relying on polling');
+      }
+      
+      // Always start polling as fallback
+      startPolling(ticket.id);
+    }
+    
+    return () => {
+      if (ticket) {
+        console.log('TicketChat - Stopping real-time systems for ticket:', ticket.id);
+        if (socketConnected) {
+          leaveTicketChat(ticket.id);
+        }
+        stopPolling();
+      }
+    };
+  }, [ticket, startPolling, stopPolling, socketConnected, joinTicketChat, leaveTicketChat]);
+
   // Mark ticket as read
   const markTicketAsRead = async () => {
     try {
@@ -107,6 +232,32 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
       console.error('Error marking ticket as read:', error);
     }
   };
+
+  // Mark messages as read when user views them
+  const markMessagesAsReadNow = useCallback(async () => {
+    if (!ticket || !messages.length) return;
+
+    try {
+      // Get unread admin messages (messages from support team)
+      const unreadAdminMessages = messages.filter(msg => 
+        msg.is_admin_reply && !msg.read_at
+      );
+
+      if (unreadAdminMessages.length > 0) {
+        const messageIds = unreadAdminMessages.map(msg => msg.id);
+        await markMessagesAsRead(ticket.id, messageIds);
+        
+        // Update local state to show as read
+        setMessages(prev => prev.map(msg => 
+          messageIds.includes(msg.id) 
+            ? { ...msg, read_at: new Date().toISOString() }
+            : msg
+        ));
+      }
+    } catch (error) {
+      console.error('Error marking messages as read:', error);
+    }
+  }, [ticket, messages, markMessagesAsRead]);
 
   // Clear unread indicators when chat is opened
   const clearUnreadIndicators = () => {
@@ -122,6 +273,27 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Mark messages as read when user scrolls to bottom (sees the messages)
+  useEffect(() => {
+    const handleScroll = () => {
+      const container = messagesContainerRef.current;
+      if (!container) return;
+
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      const isAtBottom = scrollTop + clientHeight >= scrollHeight - 10; // 10px threshold
+
+      if (isAtBottom) {
+        markMessagesAsReadNow();
+      }
+    };
+
+    const container = messagesContainerRef.current;
+    if (container) {
+      container.addEventListener('scroll', handleScroll);
+      return () => container.removeEventListener('scroll', handleScroll);
+    }
+  }, [markMessagesAsReadNow]);
 
   // Handle escape key to close preview
   useEffect(() => {
@@ -161,9 +333,6 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
         const messages = response.data.ticket.messages || [];
         const attachments = response.data.ticket.attachments || [];
         
-        console.log('TicketChat messages:', messages);
-        console.log('TicketChat attachments:', attachments);
-        console.log('Ticket message_count from API:', response.data.ticket.message_count);
         
         // Combine messages and attachments into a single conversation
         const conversation = [];
@@ -193,7 +362,6 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
         // Sort by creation time
         conversation.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
         
-        console.log('Final conversation array:', conversation);
         setMessages(conversation);
         setAttachments(attachments); // Keep for reference
       } else {
@@ -220,8 +388,22 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
     }
 
     setSending(true);
-    console.log('TicketChat sending message for ticket:', ticket.id);
-    console.log('Message content:', newMessage);
+    
+    // Add a temporary "sending" message to show immediate feedback
+    const tempMessageId = `temp_${Date.now()}`;
+    const tempMessage = {
+      id: tempMessageId,
+      message: newMessage || (selectedFiles.length > 0 ? `📎 Attached ${selectedFiles.length} file(s)` : ''),
+      is_admin_reply: isSupportAgent, // Set based on current user type
+      author_name: currentUser?.full_name || currentUser?.username || 'You',
+      created_at: new Date().toISOString(),
+      status: 'sending',
+      type: 'message'
+    };
+    
+    setMessages(prev => [...prev, tempMessage]);
+    scrollToBottom();
+    
     try {
       // First upload files if any
       const uploadedAttachments = [];
@@ -254,17 +436,42 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
         is_internal: false
       };
 
-      console.log('TicketChat sending message with data:', messageData);
       const response = await supportService.addMessage(ticket.id, messageData);
-      console.log('TicketChat sendMessage response:', response);
       
       if (response.data.success) {
+        // Update the temporary message to show it was sent successfully
+        setMessages(prev => prev.map(m => 
+          m.id === tempMessageId 
+            ? { ...m, status: 'sent' }
+            : m
+        ));
+        
         setNewMessage('');
         setSelectedFiles([]); // Clear selected files
         if (fileInputRef.current) {
           fileInputRef.current.value = '';
         }
-        await loadMessages(); // Reload messages
+        
+        // Force a refresh of messages to get the latest from server
+        setTimeout(() => {
+          console.log('Force refreshing messages after send');
+          loadMessages();
+        }, 200);
+        
+        // Also force refresh after a longer delay to ensure we get the latest
+        setTimeout(() => {
+          console.log('Secondary refresh to ensure latest messages');
+          loadMessages();
+        }, 1000);
+        
+        // Third refresh to be absolutely sure
+        setTimeout(() => {
+          console.log('Third refresh to ensure latest messages');
+          loadMessages();
+        }, 3000);
+        
+        // Polling will handle real-time updates automatically
+        
         // Clear unread indicators since we've responded
         clearUnreadIndicators();
         
@@ -286,10 +493,22 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
           toast.success('Message sent successfully!');
         }
       } else {
+        // Update the temporary message to show error
+        setMessages(prev => prev.map(m => 
+          m.id === tempMessageId 
+            ? { ...m, status: 'error' }
+            : m
+        ));
         toast.error(response.data.error || 'Failed to send message');
       }
     } catch (error) {
       console.error('Error sending message:', error);
+      // Update the temporary message to show error
+      setMessages(prev => prev.map(m => 
+        m.id === tempMessageId 
+          ? { ...m, status: 'error' }
+          : m
+      ));
       toast.error('Failed to send message');
     } finally {
       setSending(false);
@@ -308,6 +527,9 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
     const date = new Date(timestamp);
     const now = new Date();
     const diffInMinutes = Math.floor((now - date) / (1000 * 60));
+    
+    // Debug logging
+    console.log('FormatTime - Timestamp:', timestamp, 'Date:', date, 'Diff minutes:', diffInMinutes);
     
     if (diffInMinutes < 1) return 'Just now';
     if (diffInMinutes < 60) return `${diffInMinutes}m ago`;
@@ -511,11 +733,26 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
                   <h3 className="text-sm font-semibold truncate max-w-[200px]">
                     {ticket.subject}
                   </h3>
-                  {messages.filter(m => m.is_admin_reply && !m.read_at).length > 0 && (
-                    <Badge className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-2 py-0.5">
-                      {messages.filter(m => m.is_admin_reply && !m.read_at).length}
-                    </Badge>
-                  )}
+                  {(() => {
+                    const unreadCount = messages.filter(m => m.is_admin_reply && !m.read_at).length;
+                    const totalMessages = messages.filter(m => m.is_admin_reply).length;
+                    const readCount = totalMessages - unreadCount;
+                    
+                    return (
+                      <div className="flex items-center gap-1">
+                        {unreadCount > 0 && (
+                          <Badge className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-2 py-0.5 animate-pulse">
+                            {unreadCount} new
+                          </Badge>
+                        )}
+                        {totalMessages > 0 && (
+                          <span className="text-xs text-gray-300">
+                            {readCount}/{totalMessages} read
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
                                  <div className="flex items-center gap-2">
                    <Badge className={`${getStatusColor(ticket.status)} text-xs px-2 py-0.5 border font-medium`}>
@@ -529,6 +766,23 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
                      <Badge className="bg-red-100 text-red-700 border-red-200 text-xs px-2 py-0.5 border font-medium">
                        <X className="w-2 h-2 mr-1" />
                        Closed
+                     </Badge>
+                   )}
+                   {/* Connection Status Indicators */}
+                   {socketConnected ? (
+                     <Badge className="bg-green-100 text-green-700 border-green-200 text-xs px-2 py-0.5 border font-medium">
+                       <div className="w-2 h-2 bg-green-500 rounded-full mr-1" />
+                       Real-time
+                     </Badge>
+                   ) : isPolling ? (
+                     <Badge className="bg-blue-100 text-blue-700 border-blue-200 text-xs px-2 py-0.5 border font-medium">
+                       <RefreshCw className="w-2 h-2 mr-1 animate-spin" />
+                       Polling
+                     </Badge>
+                   ) : (
+                     <Badge className="bg-yellow-100 text-yellow-700 border-yellow-200 text-xs px-2 py-0.5 border font-medium">
+                       <AlertCircle className="w-2 h-2 mr-1" />
+                       Offline
                      </Badge>
                    )}
                  </div>
@@ -551,49 +805,6 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
                  </Button>
                )}
                
-                               <Button 
-                  variant="ghost" 
-                  size="sm" 
-                  onClick={loadMessages} 
-                  disabled={loading}
-                  className="h-8 w-8 p-0 text-white hover:bg-white/20 transition-colors rounded-lg"
-                  title="Refresh messages"
-                >
-                  <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-                </Button>
-                
-                {/* Debug button - only show in development */}
-                {process.env.NODE_ENV === 'development' && (
-                  <Button 
-                    variant="ghost" 
-                    size="sm" 
-                    onClick={async () => {
-                      console.log('Creating test message...');
-                      const testMessage = {
-                        message: "This is a test message from the debug button",
-                        is_internal: false
-                      };
-                      console.log('Test message data:', testMessage);
-                      try {
-                        const response = await supportService.addMessage(ticket.id, testMessage);
-                        console.log('Test message response:', response);
-                        if (response.data.success) {
-                          toast.success('Test message created!');
-                          await loadMessages();
-                        } else {
-                          toast.error('Failed to create test message');
-                        }
-                      } catch (error) {
-                        console.error('Error creating test message:', error);
-                        toast.error('Error creating test message');
-                      }
-                    }}
-                    className="h-8 w-8 p-0 text-white hover:bg-white/20 transition-colors rounded-lg"
-                    title="Create test message (debug)"
-                  >
-                    🧪
-                  </Button>
-                )}
                              <Button 
                  variant="ghost" 
                  size="sm" 
@@ -655,10 +866,27 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
                      const isUnread = isAdminMessage && !item.read_at;
                      const isAttachment = item.type === 'attachment';
                      
+                     console.log('TicketChat - Message rendering:', {
+                       messageId: item.id,
+                       message: item.message,
+                       isAdminMessage,
+                       isUserMessage,
+                       isSupportAgent,
+                       author_name: item.author_name
+                     });
+                     
                      return (
                        <div
                          key={item.id}
-                         className={`flex gap-3 ${isUserMessage ? 'flex-row-reverse' : 'flex-row'}`}
+                         className={`flex gap-3 ${(() => {
+                           if (isSupportAgent) {
+                             // Admin view: admin messages on right, customer messages on left
+                             return isAdminMessage ? 'flex-row-reverse' : 'flex-row';
+                           } else {
+                             // User view: user messages on right, admin messages on left
+                             return isUserMessage ? 'flex-row-reverse' : 'flex-row';
+                           }
+                         })()}`}
                        >
                          {/* Avatar */}
                          <div className="flex-shrink-0">
@@ -680,13 +908,57 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
                          </div>
                          
                          {/* Message Content */}
-                         <div className={`flex flex-col max-w-[75%] ${isUserMessage ? 'items-end' : 'items-start'}`}>
+                         <div className={`flex flex-col max-w-[75%] ${(() => {
+                           if (isSupportAgent) {
+                             // Admin view: admin messages aligned right, customer messages aligned left
+                             return isAdminMessage ? 'items-end' : 'items-start';
+                           } else {
+                             // User view: user messages aligned right, admin messages aligned left
+                             return isUserMessage ? 'items-end' : 'items-start';
+                           }
+                         })()}`}>
                            {/* Message Header */}
-                           <div className={`flex items-center gap-2 mb-1 ${isUserMessage ? 'flex-row-reverse' : 'flex-row'}`}>
+                           <div className={`flex items-center gap-2 mb-1 ${(() => {
+                             if (isSupportAgent) {
+                               // Admin view: admin message headers aligned right, customer headers aligned left
+                               return isAdminMessage ? 'flex-row-reverse' : 'flex-row';
+                             } else {
+                               // User view: user message headers aligned right, admin headers aligned left
+                               return isUserMessage ? 'flex-row-reverse' : 'flex-row';
+                             }
+                           })()}`}>
                              <span className="text-xs font-semibold text-gray-700">
-                               {isAdminMessage ? item.author_name : 'You'}
+                               {(() => {
+                                 // Get current user info for comparison
+                                 const currentUserEmail = currentUser?.email;
+                                 const messageAuthorEmail = item.author_email;
+                                 
+                                 // Check if this message is from the current logged-in user
+                                 const isCurrentUserMessage = currentUserEmail && messageAuthorEmail && currentUserEmail === messageAuthorEmail;
+                                 
+                                 console.log('Message author logic:', {
+                                   currentUserEmail,
+                                   messageAuthorEmail,
+                                   isCurrentUserMessage,
+                                   authorName: item.author_name,
+                                   isAdminMessage,
+                                   isSupportAgent
+                                 });
+                                 
+                                 // If this is the current user's message, show "You"
+                                 if (isCurrentUserMessage) {
+                                   return 'You';
+                                 }
+                                 
+                                 // Otherwise, show the actual author name
+                                 if (isAdminMessage) {
+                                   return item.author_name || 'Support Agent';
+                                 } else {
+                                   return item.author_name || 'Customer';
+                                 }
+                               })()}
                              </span>
-                             {isAdminMessage && (
+                             {isAdminMessage && !isSupportAgent && (
                                <Badge className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 border border-blue-200">
                                  Support
                                </Badge>
@@ -699,16 +971,39 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
                              <span className="text-xs text-gray-500">
                                {formatTime(item.created_at)}
                              </span>
+                             {item.status && (
+                               <div className="flex items-center gap-1">
+                                 {item.status === 'sending' && (
+                                   <RefreshCw className="h-3 w-3 animate-spin text-blue-500" />
+                                 )}
+                                 {item.status === 'sent' && (
+                                   <CheckCircle className="h-3 w-3 text-green-500" />
+                                 )}
+                                 {item.status === 'error' && (
+                                   <AlertCircle className="h-3 w-3 text-red-500" />
+                                 )}
+                               </div>
+                             )}
                            </div>
                            
                            {/* Message Bubble */}
-                           <div className={`rounded-2xl px-4 py-3 shadow-sm border transition-all duration-200 ${
-                             isUserMessage
-                               ? 'bg-gray-900 text-white border-gray-800 rounded-br-md'
-                               : `bg-white text-gray-800 border-gray-200 rounded-bl-md ${
-                                   isUnread ? 'ring-2 ring-blue-400/30 border-blue-300' : ''
-                                 }`
-                           }`}>
+                           <div className={`rounded-2xl px-4 py-3 shadow-sm border transition-all duration-200 ${(() => {
+                             if (isSupportAgent) {
+                               // Admin view: admin messages (right) are dark, customer messages (left) are light
+                               return isAdminMessage
+                                 ? 'bg-gray-900 text-white border-gray-800 rounded-br-md'
+                                 : `bg-white text-gray-800 border-gray-200 rounded-bl-md ${
+                                     isUnread ? 'ring-2 ring-blue-400/30 border-blue-300' : ''
+                                   }`;
+                             } else {
+                               // User view: user messages (right) are dark, admin messages (left) are light
+                               return isUserMessage
+                                 ? 'bg-gray-900 text-white border-gray-800 rounded-br-md'
+                                 : `bg-white text-gray-800 border-gray-200 rounded-bl-md ${
+                                     isUnread ? 'ring-2 ring-blue-400/30 border-blue-300' : ''
+                                   }`;
+                             }
+                           })()}`}>
                                                            {isAttachment ? (
                                 /* File Attachment Message */
                                                                  <div className="group relative">
@@ -776,20 +1071,36 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
                            <div className={`flex items-center gap-1 mt-1 ${isUserMessage ? 'flex-row-reverse' : 'flex-row'}`}>
                              {isUserMessage && !isAttachment && (
                                <>
-                                 {item.read_at ? (
-                                   <CheckCheck className="w-3 h-3 text-blue-500" />
-                                 ) : (
-                                   <Check className="w-3 h-3 text-gray-400" />
-                                 )}
-                                 <span className="text-xs text-gray-500">
-                                   {item.read_at ? 'Read' : 'Delivered'}
-                                 </span>
+                                 {(() => {
+                                   const isRead = item.read_at;
+                                   const readTime = isRead ? new Date(item.read_at) : null;
+                                   const now = new Date();
+                                   
+                                   return (
+                                     <>
+                                       {isRead ? (
+                                         <CheckCheck className="w-3 h-3 text-blue-500" title={`Read at ${readTime?.toLocaleTimeString()}`} />
+                                       ) : (
+                                         <Check className="w-3 h-3 text-gray-400" title="Sent" />
+                                       )}
+                                       <span className="text-xs text-gray-500">
+                                         {isRead ? (
+                                           <span className="text-blue-600">
+                                             Read {readTime && now.getTime() - readTime.getTime() < 60000 ? 'now' : `at ${readTime?.toLocaleTimeString()}`}
+                                           </span>
+                                         ) : (
+                                           'Sent'
+                                         )}
+                                       </span>
+                                     </>
+                                   );
+                                 })()}
                                </>
                              )}
                              
                              {isUnread && (
                                <div className="flex items-center gap-1">
-                                 <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                                 <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
                                  <span className="text-xs text-blue-600 font-medium">New</span>
                                </div>
                              )}
@@ -815,6 +1126,23 @@ const TicketChat = ({ ticket, onClose, onUpdate }) => {
                  </Button>
                )}
             </div>
+
+            {/* Mark Read Button - Only show when there are unread messages */}
+            {messages.filter(m => m.is_admin_reply && !m.read_at).length > 0 && (
+              <div className="px-5 py-2 bg-gray-50 border-t border-gray-100">
+                <div className="flex items-center justify-center">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={markMessagesAsReadNow}
+                    className="h-7 px-3 text-xs text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                  >
+                    <CheckCheck className="h-3 w-3 mr-1" />
+                    Mark All as Read
+                  </Button>
+                </div>
+              </div>
+            )}
 
                          {/* Message Input */}
              <div className="border-t border-gray-200 bg-white px-5 py-4 flex-shrink-0">

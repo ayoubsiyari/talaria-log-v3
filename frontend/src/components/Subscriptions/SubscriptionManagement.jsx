@@ -83,10 +83,8 @@ const SubscriptionPlanManagement = () => {
         throw new Error('No authentication token found. Please log in first.');
       }
 
-      console.log('🔑 Using token:', token.substring(0, 50) + '...');
-      console.log('🔍 Token length:', token.length);
 
-      const response = await fetch(`${API_BASE_URL}/subscription/plans`, {
+      const response = await fetch(`${API_BASE_URL}/admin/plans`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
@@ -190,9 +188,12 @@ const SubscriptionPlanManagement = () => {
     }
   };
 
-  // Delete plan
+  // Delete plan (soft delete)
   const deletePlan = async (planId) => {
-    if (!confirm('Are you sure you want to delete this plan?')) return;
+    const plan = plans.find(p => p.id === planId);
+    const planName = plan ? plan.name : 'this plan';
+    
+    if (!confirm(`Are you sure you want to deactivate "${planName}"?\n\nThis will:\n• Hide the plan from new users\n• Keep existing subscriptions active\n• Preserve all data for historical purposes\n\nYou can reactivate it later if needed.`)) return;
 
     try {
       const token = getAuthToken();
@@ -209,7 +210,8 @@ const SubscriptionPlanManagement = () => {
       });
 
       if (response.ok) {
-        toast.success('Plan deleted successfully!');
+        const result = await response.json();
+        toast.success(result.message || 'Plan deactivated successfully!');
         loadPlans();
       } else {
         const errorData = await response.json();
@@ -221,8 +223,51 @@ const SubscriptionPlanManagement = () => {
         throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
       }
     } catch (err) {
-      console.error('❌ Error deleting plan:', err);
-      toast.error(`Failed to delete plan: ${err.message}`);
+      console.error('❌ Error deactivating plan:', err);
+      toast.error(`Failed to deactivate plan: ${err.message}`);
+    }
+  };
+
+  // Reactivate plan
+  const reactivatePlan = async (planId) => {
+    const plan = plans.find(p => p.id === planId);
+    const planName = plan ? plan.name : 'this plan';
+    
+    if (!confirm(`Are you sure you want to reactivate "${planName}"?\n\nThis will make the plan available for new subscriptions again.`)) return;
+
+    try {
+      const token = getAuthToken();
+      if (!token) {
+        throw new Error('No authentication token found');
+      }
+
+      const response = await fetch(`${API_BASE_URL}/subscription/plans/${planId}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          is_active: true,
+          visible_to_regular_users: true
+        }),
+      });
+
+      if (response.ok) {
+        toast.success(`Plan "${planName}" reactivated successfully!`);
+        loadPlans();
+      } else {
+        const errorData = await response.json();
+        console.error('❌ API Error:', {
+          status: response.status,
+          statusText: response.statusText,
+          error: errorData
+        });
+        throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+      }
+    } catch (err) {
+      console.error('❌ Error reactivating plan:', err);
+      toast.error(`Failed to reactivate plan: ${err.message}`);
     }
   };
 
@@ -364,12 +409,18 @@ const SubscriptionPlanManagement = () => {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {plans.map((plan) => (
-            <Card key={plan.id} className="relative">
+            <Card key={plan.id} className={`relative ${!plan.is_active ? 'opacity-60 border-orange-200 bg-orange-50' : ''}`}>
               <CardHeader>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <CardTitle className="text-xl">{plan.name}</CardTitle>
-                    {plan.is_popular && (
+                    {!plan.is_active && (
+                      <Badge variant="outline" className="bg-orange-100 text-orange-800 border-orange-300">
+                        <AlertCircle className="h-3 w-3 mr-1" />
+                        Inactive
+                      </Badge>
+                    )}
+                    {plan.is_popular && plan.is_active && (
                       <Badge variant="default">
                         <Star className="h-3 w-3 mr-1" />
                         Popular
@@ -384,13 +435,26 @@ const SubscriptionPlanManagement = () => {
                     >
                       <Edit className="h-4 w-4" />
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => deletePlan(plan.id)}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    {plan.is_active ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => deletePlan(plan.id)}
+                        title="Deactivate plan"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => reactivatePlan(plan.id)}
+                        title="Reactivate plan"
+                        className="text-green-600 hover:text-green-700"
+                      >
+                        <RefreshCw className="h-4 w-4" />
+                      </Button>
+                    )}
                   </div>
                 </div>
                 <CardDescription>{plan.description}</CardDescription>

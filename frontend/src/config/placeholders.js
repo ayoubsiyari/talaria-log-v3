@@ -368,7 +368,7 @@ export const loadEnvConfig = () => {
   const envConfig = {};
   
   Object.entries(ENV_VAR_MAPPING).forEach(([envVar, configPath]) => {
-    const value = process.env[`REACT_APP_${envVar}`];
+    const value = import.meta.env[`VITE_${envVar}`];
     if (value) {
       const keys = configPath.split('.');
       let current = envConfig;

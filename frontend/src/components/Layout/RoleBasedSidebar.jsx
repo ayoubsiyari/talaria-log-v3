@@ -373,6 +373,7 @@ const RoleBasedSidebar = ({
         { group: "Finance", items: [
           { id: 'view-payment', label: 'View payment', icon: CreditCard, path: '/payments' },
           { id: 'process-payments', label: 'Process payments', icon: Zap, path: '/process-payments' },
+          { id: 'payment-dashboard', label: 'Payment Dashboard', icon: Shield, path: '/payment-dashboard', description: 'Advanced payment monitoring and security' },
           { id: 'create-invoices', label: 'Create invoices', icon: FileText, path: '/invoices' },
           { id: 'payment-disputes', label: 'Fix Payment Problems', icon: AlertCircle, path: '/payment-disputes' },
           { id: 'generate-financial-reports', label: 'Generate financial reports', icon: BarChart3, path: '/financial-reports' },
@@ -380,7 +381,6 @@ const RoleBasedSidebar = ({
           { id: 'detailed-analytics', label: 'Detailed Analytics', icon: BarChart3, path: '/analytics', description: 'Advanced analytics dashboard' }
         ]},
         { group: "Support", items: [
-          { id: 'view-subscriptions', label: 'View subscriptions', icon: CreditCard, path: '/subscriptions' },
           { id: 'send-notifications', label: 'Send notifications', icon: Bell, path: '/notifications' },
           { id: 'support-tickets', label: 'Support Tickets', icon: MessageSquare, path: '/support-tickets' },
           { id: 'support-agent-performance', label: 'Agent Performance', icon: Star, path: '/support-agent-performance' },
@@ -411,6 +411,7 @@ const RoleBasedSidebar = ({
         { group: "Finance", items: [
           { id: 'view-payment', label: 'View payment', icon: CreditCard, path: '/payments' },
           { id: 'process-payments', label: 'Process payments', icon: Zap, path: '/process-payments' },
+          { id: 'payment-dashboard', label: 'Payment Dashboard', icon: Shield, path: '/payment-dashboard', description: 'Advanced payment monitoring and security' },
           { id: 'create-invoices', label: 'Create invoices', icon: FileText, path: '/invoices' },
           { id: 'generate-financial-reports', label: 'Generate financial reports', icon: BarChart3, path: '/financial-reports' },
           { id: 'view-revenue-analytics', label: 'View revenue analytics', icon: TrendingUp, path: '/revenue-analytics' },
@@ -427,7 +428,6 @@ const RoleBasedSidebar = ({
           { id: 'support-tickets', label: 'Support Tickets', icon: MessageSquare, path: '/support-tickets' },
           { id: 'support-dashboard', label: 'Support Dashboard', icon: BarChart3, path: '/support-dashboard' },
           { id: 'my-assigned-tickets', label: 'My Assigned Tickets', icon: UserCheck, path: '/my-assigned-tickets' },
-          { id: 'view-subscriptions', label: 'View subscriptions', icon: CreditCard, path: '/subscriptions' },
           { id: 'send-notifications', label: 'Send notifications', icon: Bell, path: '/notifications' }
         ]}
       );
@@ -725,7 +725,8 @@ const RoleBasedSidebar = ({
   console.log('RoleBasedSidebar - Has help-support item:', hasHelpSupport)
   
   // Debug logging (only in development)
-  if (process.env.NODE_ENV === 'development') {
+  
+  if (import.meta.env.MODE === 'development') {
     console.log('Role-Based Sidebar:', {
       userType,
       roles: roles.map(r => r.name),
@@ -892,12 +893,12 @@ const RoleBasedSidebar = ({
                                   ? "sidebar-item-active bg-gradient-to-r from-primary/20 via-primary/15 to-primary/10 text-primary-foreground shadow-md border border-primary/20 hover:shadow-lg" 
                                   : "hover:bg-sidebar-accent/50 hover:shadow-sm hover:border-sidebar-border/40"
                               )}
-                              onClick={() => {
-                                console.log('RoleBasedSidebar - Clicked search result:', item.id, item.label)
-                                onItemClick(item.id)
-                                setSearchQuery('')
-                                setSearchResults([])
-                              }}
+                            onClick={() => {
+                              console.log('RoleBasedSidebar - Clicked search result:', item.id, item.label, item.path)
+                              onItemClick(item.id, item.path || undefined)
+                              setSearchQuery('')
+                              setSearchResults([])
+                            }}
                               style={{
                                 animationDelay: `${itemIndex * 20}ms`
                               }}
@@ -993,8 +994,8 @@ const RoleBasedSidebar = ({
                                 : "hover:bg-sidebar-accent/50 hover:shadow-sm hover:border-sidebar-border/40"
                             )}
                             onClick={() => {
-                              console.log('RoleBasedSidebar - Clicked:', item.id, item.label)
-                              onItemClick(item.id)
+                              console.log('RoleBasedSidebar - Clicked:', item.id, item.label, item.path)
+                              onItemClick(item.id, item.path || undefined)
                             }}
                             style={{
                               animationDelay: `${itemIndex * 20}ms`
@@ -1142,14 +1143,14 @@ const RoleBasedSidebar = ({
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem 
-                  onClick={() => onNavigate && onNavigate('profile')}
+                  onClick={() => onItemClick && onItemClick('profile', '/profile')}
                   className="px-4 py-3 hover:bg-accent/50 transition-colors"
                 >
                   <User className="mr-3 h-4 w-4" />
                   <span>Profile Settings</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem 
-                  onClick={() => onNavigate && onNavigate('notifications')}
+                  onClick={() => onItemClick && onItemClick('notifications', '/notifications')}
                   className="px-4 py-3 hover:bg-accent/50 transition-colors"
                 >
                   <Bell className="mr-3 h-4 w-4" />

@@ -10,10 +10,19 @@ from ..services.payment_service import PaymentService
 from ..services.payment_security_service import payment_security_service
 from ..services.csrf_service import csrf_service
 from ..services.payment_audit_service import payment_audit_service
+from ..services.input_sanitization_service import input_sanitization_service
+from ..services.request_signing_service import request_signing_service
+from ..services.pci_compliance_service import pci_compliance_service
+from ..services.fraud_detection_service import fraud_detection_service
+from ..services.webhook_security_service import webhook_security_service
+from ..services.payment_monitoring_service import payment_monitoring_service
 from ..models.payment import Order, Payment
 from ..models.promotion import Promotion
 from config.payment_config import validate_payment_config
 import logging
+import time
+import json
+import os
 from datetime import datetime
 
 # Optional Stripe import
@@ -27,6 +36,17 @@ except ImportError:
 payments_bp = Blueprint('payments', __name__)
 payment_service = PaymentService()
 logger = logging.getLogger(__name__)
+
+def is_production():
+    """Check if running in production environment"""
+    return os.environ.get('FLASK_ENV') == 'production' or os.environ.get('ENVIRONMENT') == 'production'
+
+def log_error_safely(message, error, include_details=True):
+    """Log error safely based on environment"""
+    if is_production() and not include_details:
+        logger.error(f"{message}: Internal server error")
+    else:
+        logger.error(f"{message}: {type(error).__name__}: {str(error)}")
 
 @payments_bp.route('/config', methods=['GET'])
 def get_payment_config():
@@ -52,12 +72,91 @@ def get_csrf_token():
 
 @payments_bp.route('/create-order', methods=['POST'])
 def create_order():
-    """Create a new order and payment intent with enhanced security"""
+    """Create a new order and payment intent with enterprise-grade security"""
+    start_time = time.time()
+    
     try:
         data = request.get_json()
+        logger.debug(f"Received payment data keys: {list(data.keys()) if data else 'None'}")
         
-        # CSRF protection (optional in development)
+        # Input sanitization (MANDATORY)
+        sanitized_data = input_sanitization_service.sanitize_payment_data(data)
+        is_valid_sanitized, sanitize_error = input_sanitization_service.validate_sanitized_data(sanitized_data)
+        if not is_valid_sanitized:
+            logger.warning(f"Input sanitization failed: {sanitize_error}")
+            return jsonify({'error': f'Invalid input: {sanitize_error}'}), 400
+        
+        # Use sanitized data
+        data = sanitized_data
+        
+        # PCI Compliance - Handle tokenized payment data
+        if 'card_data' in data:
+            # Legacy flow: tokenize raw card data (not PCI compliant)
+            try:
+                tokenized_data = pci_compliance_service.tokenize_payment_data(data['card_data'])
+                data['tokenized_card'] = tokenized_data
+                # Remove raw card data
+                del data['card_data']
+                logger.info("Card data tokenized for PCI compliance")
+            except Exception as e:
+                logger.error(f"PCI tokenization failed: {str(e)}")
+                return jsonify({'error': 'Payment data processing failed'}), 500
+        elif 'payment_method_id' in data:
+            # New PCI-compliant flow: payment method already tokenized by Stripe
+            logger.info("Using PCI-compliant tokenized payment method")
+            data['tokenized_payment_method'] = {
+                'payment_method_id': data['payment_method_id'],
+                'provider': 'stripe',
+                'pci_compliant': True
+            }
+            # Remove the payment method ID from main data
+            del data['payment_method_id']
+        
+        # Fraud Detection - Analyze payment risk
+        user_data = {
+            'ip_address': request.remote_addr,
+            'user_agent': request.headers.get('User-Agent', ''),
+            'user_id': data.get('user_id')
+        }
+        
+        try:
+            fraud_analysis = fraud_detection_service.analyze_payment_risk(data, user_data)
+            
+            # Block if critical risk
+            if fraud_analysis['should_block']:
+                logger.warning(f"Payment blocked due to fraud risk: {fraud_analysis['risk_factors']}")
+                fraud_detection_service.create_fraud_alert(f"order_{int(time.time())}", fraud_analysis)
+                return jsonify({
+                    'error': 'Payment blocked due to security risk',
+                    'risk_level': fraud_analysis['risk_level']
+                }), 403
+            
+            # Require manual review for high risk
+            if fraud_analysis['requires_manual_review']:
+                logger.warning(f"Payment requires manual review: {fraud_analysis['risk_factors']}")
+                fraud_detection_service.create_fraud_alert(f"order_{int(time.time())}", fraud_analysis)
+                # Continue processing but flag for review
+                data['requires_review'] = True
+                data['fraud_analysis'] = fraud_analysis
+                
+        except Exception as e:
+            logger.error(f"Fraud detection failed: {str(e)}")
+            # Continue processing but log the error
+            data['fraud_detection_error'] = str(e)
+        
+        # CSRF protection (MANDATORY)
         csrf_token = data.get('csrf_token')
+        logger.info(f"CSRF token received: {csrf_token[:20] if csrf_token else 'None'}...")
+        
+        # In production, CSRF token is mandatory
+        if is_production() and not csrf_token:
+            logger.warning("CSRF token not provided in production")
+            payment_audit_service.log_csrf_violation({
+                'csrf_token': None,
+                'error_message': 'CSRF token required in production'
+            })
+            return jsonify({'error': 'CSRF token required'}), 403
+        
         if csrf_token:
             is_valid_csrf, csrf_message = csrf_service.validate_csrf_token(csrf_token)
             if not is_valid_csrf:
@@ -67,9 +166,8 @@ def create_order():
                     'error_message': csrf_message
                 })
                 return jsonify({'error': 'Invalid CSRF token'}), 403
-        else:
-            # In development, log missing CSRF token but don't block
-            logger.info("CSRF token not provided - allowing in development mode")
+        elif not is_production():
+            logger.warning("CSRF token not provided - allowing for development/testing")
         
         # Comprehensive security validation
         is_valid, error_message, validation_data = payment_security_service.validate_payment_data(data)
@@ -78,22 +176,113 @@ def create_order():
             logger.warning(f"Payment validation failed: {error_message}")
             return jsonify({'error': error_message}), 400
         
+        # Server-side promotion validation (CRITICAL SECURITY FIX)
+        if data.get('promotion_code'):
+            promotion_code = data['promotion_code'].strip().upper()
+            promotion = Promotion.query.filter_by(code=promotion_code).first()
+            
+            if not promotion:
+                logger.warning(f"Invalid promotion code in order creation: {promotion_code}")
+                return jsonify({'error': 'Invalid promotion code'}), 400
+            
+            if not promotion.is_valid():
+                logger.warning(f"Invalid promotion in order creation: {promotion_code}")
+                return jsonify({'error': 'Promotion is not valid'}), 400
+            
+            if promotion.usage_limit and promotion.usage_count >= promotion.usage_limit:
+                logger.warning(f"Promotion usage limit exceeded: {promotion_code}")
+                return jsonify({'error': 'Promotion usage limit exceeded'}), 400
+            
+            # Log promotion usage attempt
+            payment_audit_service.log_promotion_usage({
+                'code': promotion_code,
+                'order_amount': sum(item.get('price', 0) * item.get('quantity', 1) for item in data.get('items', [])),
+                'ip': request.remote_addr
+            })
+        
+        # Server-side referral code validation for affiliate codes
+        if data.get('referral_code'):
+            referral_code = data['referral_code'].strip().upper()
+            from ..models.coupon import Coupon
+            coupon = Coupon.query.filter_by(code=referral_code).first()
+            
+            if not coupon:
+                logger.warning(f"Invalid referral code in order creation: {referral_code}")
+                return jsonify({'error': 'Invalid referral code'}), 400
+            
+            if not coupon.is_valid():
+                logger.warning(f"Invalid referral code in order creation: {referral_code}")
+                return jsonify({'error': 'Referral code is not valid or has expired'}), 400
+            
+            if not coupon.is_affiliate_code:
+                logger.warning(f"Referral code is not an affiliate code: {referral_code}")
+                return jsonify({'error': 'Invalid referral code'}), 400
+            
+            # Record that someone used this referral code (referral tracking)
+            coupon.record_referral()
+            
+            # Store referral code in order metadata for later processing
+            if 'metadata' not in data:
+                data['metadata'] = {}
+            data['metadata']['referral_code'] = referral_code
+            data['metadata']['affiliate_id'] = coupon.affiliate_id
+            
+            logger.info(f"Valid referral code used: {referral_code} for affiliate {coupon.affiliate.name} (referral recorded)")
+        
         # Create order and payment intent
         order, payment_intent = payment_service.create_order(data)
         
         # Generate secure payment token
         payment_token = payment_security_service.generate_payment_token(order.id)
         
+        # Payment Monitoring - Track payment attempt
+        monitoring_data = {
+            'order_id': order.id,
+            'amount': order.total_amount,
+            'status': 'created',
+            'customer_email': order.customer_email,
+            'fraud_analysis': data.get('fraud_analysis', {}),
+            'requires_review': data.get('requires_review', False)
+        }
+        
+        monitoring_result = payment_monitoring_service.monitor_payment_attempt(monitoring_data, start_time)
+        
+        # PCI Compliance - Create audit log
+        pci_compliance_service.create_pci_audit_log(
+            'order_created',
+            data.get('user_id', 0),
+            {
+                'order_id': order.id,
+                'order_number': order.order_number,
+                'amount': order.total_amount,
+                'customer_email': order.customer_email,
+                'fraud_risk_score': fraud_analysis.get('risk_score', 0) if 'fraud_analysis' in data else 0
+            }
+        )
+        
         # Log successful order creation
         payment_security_service.log_payment_attempt(data, True)
         payment_audit_service.log_order_creation(order, None, data, True)
         logger.info(f"Order created successfully: {order.order_number}")
         
-        return jsonify({
+        response_data = {
             'order': order.to_dict(),
             'payment_intent': payment_intent,
-            'payment_token': payment_token
-        }), 201
+            'payment_token': payment_token,
+            'monitoring': {
+                'response_time': monitoring_result.get('response_time', 0),
+                'anomalies': monitoring_result.get('anomalies', [])
+            }
+        }
+        
+        # Add fraud analysis if available
+        if 'fraud_analysis' in data:
+            response_data['fraud_analysis'] = {
+                'risk_level': fraud_analysis['risk_level'],
+                'requires_review': fraud_analysis['requires_manual_review']
+            }
+        
+        return jsonify(response_data), 201
         
     except Exception as e:
         logger.error(f"Order creation error: {str(e)}")
@@ -102,8 +291,14 @@ def create_order():
 
 @payments_bp.route('/validate-promotion', methods=['POST'])
 def validate_promotion():
-    """Validate a promotion code"""
+    """Validate a promotion code with security measures"""
     try:
+        # Rate limiting check
+        client_ip = request.remote_addr
+        if not payment_security_service.check_rate_limit(client_ip, 'promotion_validation'):
+            logger.warning(f"Rate limit exceeded for promotion validation from {client_ip}")
+            return jsonify({'error': 'Too many requests. Please try again later.'}), 429
+        
         data = request.get_json()
         promotion_code = data.get('code')
         order_amount = data.get('order_amount', 0)
@@ -111,9 +306,21 @@ def validate_promotion():
         if not promotion_code:
             return jsonify({'error': 'Promotion code is required'}), 400
         
+        # Input sanitization
+        promotion_code = promotion_code.strip().upper()
+        if not promotion_code or len(promotion_code) > 50:
+            return jsonify({'error': 'Invalid promotion code format'}), 400
+        
         # Find promotion
-        promotion = Promotion.query.filter_by(code=promotion_code.upper()).first()
+        promotion = Promotion.query.filter_by(code=promotion_code).first()
         if not promotion:
+            # Log failed attempt for security monitoring
+            payment_security_service.log_suspicious_activity({
+                'type': 'invalid_promotion_code',
+                'code': promotion_code,
+                'ip': client_ip,
+                'user_agent': request.headers.get('User-Agent', '')
+            })
             return jsonify({'error': 'Invalid promotion code'}), 400
         
         # Validate promotion
@@ -138,6 +345,13 @@ def validate_promotion():
             discount_type = 'unknown'
             discount_value = 0
         
+        # Log successful validation
+        payment_audit_service.log_promotion_validation({
+            'code': promotion_code,
+            'discount_amount': discount_amount,
+            'ip': client_ip
+        })
+        
         return jsonify({
             'valid': True,
             'promotion': promotion.to_dict(),
@@ -148,46 +362,165 @@ def validate_promotion():
         }), 200
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Error validating promotion: {str(e)}")
+        return jsonify({'error': 'Failed to validate promotion code'}), 500
+
+@payments_bp.route('/validate-referral', methods=['POST'])
+def validate_referral():
+    """Validate a referral code with security measures"""
+    try:
+        # Rate limiting check
+        client_ip = request.remote_addr
+        if not payment_security_service.check_rate_limit(client_ip, 'referral_validation'):
+            logger.warning(f"Rate limit exceeded for referral validation from {client_ip}")
+            return jsonify({'error': 'Too many requests. Please try again later.'}), 429
+        
+        data = request.get_json()
+        referral_code = data.get('code')
+        order_amount = data.get('order_amount', 0)
+        
+        if not referral_code:
+            return jsonify({'error': 'Referral code is required'}), 400
+        
+        # Input sanitization
+        referral_code = referral_code.strip().upper()
+        if not referral_code or len(referral_code) > 50:
+            return jsonify({'error': 'Invalid referral code format'}), 400
+        
+        # Find referral code in coupons table
+        from ..models.coupon import Coupon
+        coupon = Coupon.query.filter_by(code=referral_code).first()
+        if not coupon or not coupon.is_affiliate_code:
+            # Log failed attempt for security monitoring
+            payment_security_service.log_suspicious_activity({
+                'type': 'invalid_referral_code',
+                'code': referral_code,
+                'ip': client_ip,
+                'user_agent': request.headers.get('User-Agent', '')
+            })
+            return jsonify({'error': 'Invalid referral code'}), 400
+        
+        # Validate referral code
+        if not coupon.is_valid():
+            return jsonify({'error': 'Referral code is not valid or has expired'}), 400
+        
+        # Calculate discount
+        discount_amount = float(order_amount) * (float(coupon.discount_percent) / 100)
+        commission_amount = coupon.calculate_affiliate_commission(order_amount)
+        
+        # Log successful validation
+        logger.info(f"Referral code validation successful: {referral_code} for {coupon.affiliate.name}")
+        
+        return jsonify({
+            'valid': True,
+            'code': coupon.code,
+            'description': coupon.description,
+            'discount_percent': coupon.discount_percent,
+            'discount_amount': discount_amount,
+            'discounted_total': order_amount - discount_amount,
+            'is_affiliate_code': True,
+            'affiliate_name': coupon.affiliate.name,
+            'affiliate_id': coupon.affiliate_id,
+            'commission_amount': commission_amount,
+            'commission_percent': coupon.affiliate_commission_percent
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error validating referral code: {str(e)}")
+        return jsonify({'error': 'Failed to validate referral code'}), 500
 
 @payments_bp.route('/webhook', methods=['POST'])
 def stripe_webhook():
-    """Handle Stripe webhooks"""
+    """Handle Stripe webhook events with enterprise-grade security"""
     try:
         payload = request.get_data()
         sig_header = request.headers.get('Stripe-Signature')
+        webhook_id = request.headers.get('Stripe-Id', f"webhook_{int(time.time())}")
         
-        # Verify webhook signature
+        if not sig_header:
+            logger.warning("Missing Stripe signature header")
+            return jsonify({'error': 'Missing signature'}), 400
+        
+        # Enterprise webhook security verification
+        webhook_verified = webhook_security_service.verify_webhook_signature(
+            payload, sig_header, 'stripe'
+        )
+        
+        if not webhook_verified:
+            logger.warning(f"Webhook signature verification failed for {webhook_id}")
+            return jsonify({'error': 'Invalid signature'}), 401
+        
+        # Parse webhook data
         try:
-            event = stripe.Webhook.construct_event(
-                payload, sig_header, payment_service.stripe_config['webhook_secret']
+            webhook_data = json.loads(payload.decode('utf-8'))
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in webhook payload: {str(e)}")
+            return jsonify({'error': 'Invalid JSON payload'}), 400
+        
+        # Process webhook with retry logic and idempotency
+        processing_result = webhook_security_service.process_webhook_with_retry(
+            webhook_data, webhook_id
+        )
+        
+        # Create webhook audit log
+        webhook_security_service.create_webhook_audit_log(
+            webhook_data, webhook_verified, processing_result
+        )
+        
+        # Handle specific webhook events
+        if webhook_data.get('type') == 'payment_intent.succeeded':
+            payment_intent = webhook_data.get('data', {}).get('object', {})
+            logger.info(f"Payment succeeded: {payment_intent.get('id')}")
+            
+            # Process payment success with enhanced security
+            success_data = {
+                'payment_intent_id': payment_intent.get('id'),
+                'customer_email': payment_intent.get('receipt_email'),
+                'amount': payment_intent.get('amount', 0) / 100,
+                'currency': payment_intent.get('currency', 'usd'),
+                'webhook_id': webhook_id
+            }
+            
+            # Call payment success handler
+            from . import payment_success
+            return payment_success(success_data)
+        
+        elif webhook_data.get('type') == 'payment_intent.payment_failed':
+            payment_intent = webhook_data.get('data', {}).get('object', {})
+            logger.warning(f"Payment failed: {payment_intent.get('id')}")
+            
+            # Log payment failure with enhanced details
+            payment_audit_service.log_payment_failure(
+                payment_intent.get('id'),
+                payment_intent.get('last_payment_error', {}).get('message', 'Unknown error'),
+                'STRIPE_WEBHOOK'
             )
-        except ValueError as e:
-            return jsonify({'error': 'Invalid payload'}), 400
-        except stripe.error.SignatureVerificationError as e:
-            return jsonify({'error': 'Invalid signature'}), 400
         
-        # Handle the event
-        if event['type'] == 'payment_intent.succeeded':
-            payment_intent = event['data']['object']
-            order = payment_service.process_payment_success(payment_intent['id'])
-            current_app.logger.info(f"Payment succeeded for order {order.order_number}")
+        elif webhook_data.get('type') == 'charge.dispute.created':
+            # Handle chargeback
+            charge = webhook_data.get('data', {}).get('object', {})
+            logger.warning(f"Chargeback created: {charge.get('id')}")
             
-        elif event['type'] == 'payment_intent.payment_failed':
-            payment_intent = event['data']['object']
-            failure_reason = payment_intent.get('last_payment_error', {}).get('message', 'Payment failed')
-            order = payment_service.process_payment_failure(payment_intent['id'], failure_reason)
-            current_app.logger.info(f"Payment failed for order {order.order_number}")
+            # Process chargeback
+            chargeback_data = {
+                'charge_id': charge.get('id'),
+                'dispute_id': charge.get('dispute', {}).get('id'),
+                'amount': charge.get('amount', 0) / 100,
+                'reason': charge.get('dispute', {}).get('reason', 'unknown')
+            }
             
-        elif event['type'] == 'charge.refunded':
-            charge = event['data']['object']
-            current_app.logger.info(f"Refund processed for charge {charge['id']}")
+            # Log chargeback
+            payment_audit_service.log_chargeback(chargeback_data)
         
-        return jsonify({'status': 'success'}), 200
+        return jsonify({
+            'status': 'success',
+            'webhook_id': webhook_id,
+            'processing_result': processing_result
+        }), 200
         
     except Exception as e:
-        current_app.logger.error(f"Webhook error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Webhook processing error: {str(e)}")
+        return jsonify({'error': 'Webhook processing failed'}), 500
 
 @payments_bp.route('/orders/<int:order_id>', methods=['GET'])
 @jwt_required()
@@ -214,7 +547,7 @@ def refund_order(order_id):
         return jsonify({'error': str(e)}), 500
 
 @payments_bp.route('/orders', methods=['GET'])
-# @jwt_required()  # JWT authentication disabled due to validation issues
+@jwt_required()
 def get_orders():
     """Get all orders (admin only)"""
     try:
@@ -241,38 +574,14 @@ def get_orders():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@payments_bp.route('/test-payment', methods=['POST'])
-def test_payment():
-    """Test payment endpoint for development"""
-    try:
-        data = request.get_json()
-        
-        # Create test order
-        test_order_data = {
-            'customer_email': data.get('email', 'test@example.com'),
-            'customer_name': data.get('name', 'Test Customer'),
-            'items': [
-                {
-                    'name': 'Test Product',
-                    'price': data.get('amount', 10.00),
-                    'quantity': 1
-                }
-            ],
-            'promotion_code': data.get('promotion_code')
-        }
-        
-        order, payment_intent = payment_service.create_order(test_order_data)
-        
-        return jsonify({
-            'order': order.to_dict(),
-            'payment_intent': payment_intent,
-            'test_mode': True
-        }), 201
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+# REMOVED: Test payment endpoint for security reasons
+# This endpoint was removed to prevent unauthorized testing in production
+
+# REMOVED: Payment debug endpoint for security reasons
+# This endpoint was removed to prevent information disclosure in production
 
 @payments_bp.route('/payment-success', methods=['POST'])
+@request_signing_service.require_signed_request
 def payment_success():
     """Handle successful payment and update user subscription with enhanced security"""
     try:
@@ -281,16 +590,55 @@ def payment_success():
         
         data = request.get_json()
         
-        # Enhanced security validation
-        is_valid, error_message = payment_security_service.validate_payment_success_data(data)
-        if not is_valid:
-            logger.warning(f"Payment success validation failed: {error_message}")
-            return jsonify({'error': error_message}), 400
+        # Input sanitization (MANDATORY)
+        sanitized_data = input_sanitization_service.sanitize_payment_success_data(data)
+        if not sanitized_data.get('order_id') and not sanitized_data.get('payment_intent_id'):
+            logger.warning("Invalid payment success data after sanitization")
+            return jsonify({'error': 'Invalid payment data'}), 400
         
-        # Get order ID and payment details
-        order_id = data.get('order_id')
-        payment_intent_id = data.get('payment_intent_id')
-        customer_email = data.get('customer_email')
+        # Use sanitized data
+        data = sanitized_data
+        
+        # Enhanced security validation (MANDATORY)
+        try:
+            is_valid, error_message = payment_security_service.validate_payment_success_data(data) 
+            if not is_valid:
+                logger.warning(f"Payment security validation failed: {error_message}")
+                payment_audit_service.log_payment_failure(None, error_message, 'SECURITY_VALIDATION_FAILED')
+                return jsonify({'error': f'Security validation failed: {error_message}'}), 400
+        except Exception as e:
+            logger.error(f"Payment security validation error: {str(e)}")
+            payment_audit_service.log_payment_failure(None, str(e), 'SECURITY_VALIDATION_ERROR')
+            return jsonify({'error': 'Security validation failed'}), 500
+        
+        # Get order ID and payment details - handle different data formats
+        order_id = data.get('order_id') or data.get('orderId')
+        payment_intent_id = data.get('payment_intent_id') or data.get('payment_intent') or data.get('id')
+        customer_email = data.get('customer_email') or data.get('customerEmail') or data.get('email')
+        
+        # Handle Stripe webhook format
+        if not order_id and data.get('type') == 'payment_intent.succeeded':
+            # This is a Stripe webhook, extract data differently
+            payment_intent = data.get('data', {}).get('object', {})
+            payment_intent_id = payment_intent.get('id')
+            customer_email = payment_intent.get('receipt_email') or payment_intent.get('customer_email')
+            # Try to find order by payment intent ID
+            if payment_intent_id:
+                from ..models.payment import Order
+                order = Order.query.filter_by(payment_intent_id=payment_intent_id).first()
+                if order:
+                    order_id = order.id
+        
+        logger.info(f"Processing payment success - Order ID: {order_id}, Payment Intent: {payment_intent_id[:8] if payment_intent_id else 'N/A'}...")
+        
+        # Validate required data
+        if not order_id and not payment_intent_id:
+            logger.warning("Payment success called without order_id or payment_intent_id")
+            return jsonify({'error': 'Order ID or Payment Intent ID is required'}), 400
+        
+        if not customer_email:
+            logger.warning("Payment success called without customer email")
+            return jsonify({'error': 'Customer email is required'}), 400
         
         # Try to get current user from JWT token (optional for payment success)
         current_user_id = None
@@ -303,16 +651,49 @@ def payment_success():
             current_user_id = None
         
         # Find the order
-        order = Order.query.get(order_id)
+        from ..models.payment import Order, Payment
+        order = None
+        if order_id:
+            order = Order.query.get(order_id)
+            logger.debug(f"Looking for order by ID: {order_id}")
+        elif payment_intent_id:
+            order = Order.query.filter_by(payment_intent_id=payment_intent_id).first()
+            logger.debug(f"Looking for order by payment_intent_id: {payment_intent_id[:8]}...")
+        
         if not order:
-            logger.error(f"Order not found: {order_id}")
+            logger.error(f"Order not found - order_id: {order_id}, payment_intent_id: {payment_intent_id[:8] if payment_intent_id else 'N/A'}...")
+            
+            # Try to find user by email and activate them anyway
+            if customer_email:
+                logger.info(f"Trying to find user by email for activation")
+                user = User.query.filter_by(email=customer_email).first()
+                if user:
+                    logger.info(f"Found user by email, activating them directly")
+                    user.is_active = True
+                    user.subscription_status = 'active'
+                    user.subscription_plan = 'premium'
+                    user.is_admin = False
+                    user.updated_at = datetime.utcnow()
+                    db.session.commit()
+                    
+                    return jsonify({
+                        'success': True,
+                        'message': 'User activated directly (order not found)',
+                        'subscription_updated': True,
+                        'user_activated': True
+                    }), 200
+            
             return jsonify({'error': 'Order not found'}), 404
+        
+        logger.info(f"Found order: {order.order_number} for {order.customer_email}")
         
         # Update order status
         order.status = 'paid'
         order.payment_status = 'paid'
         order.paid_at = datetime.utcnow()
         order.payment_intent_id = payment_intent_id
+        
+        logger.debug("Updated order status to paid")
         
         # Create payment record
         payment = Payment(
@@ -328,6 +709,59 @@ def payment_success():
         )
         
         db.session.add(payment)
+        logger.debug(f"Created payment record: {payment.id}")
+        
+        # Handle referral code usage tracking for affiliate commissions
+        referral_code_processed = False
+        try:
+            # Check if there's a referral code in the order
+            referral_code = None
+            
+            # Check order metadata for referral code
+            if order.order_metadata and 'referral_code' in order.order_metadata:
+                referral_code = order.order_metadata['referral_code']
+                logger.info(f"Found referral code in order metadata: {referral_code}")
+            
+            # Also check promotion_code field (legacy)
+            elif order.promotion_code:
+                # Check if this promotion code is actually an affiliate referral code
+                from ..models.coupon import Coupon
+                coupon = Coupon.query.filter_by(code=order.promotion_code.upper()).first()
+                if coupon and coupon.is_affiliate_code:
+                    referral_code = order.promotion_code
+                    logger.info(f"Found affiliate referral code in promotion_code field: {referral_code}")
+            
+            if referral_code:
+                from ..models.coupon import Coupon
+                coupon = Coupon.query.filter_by(code=referral_code.upper()).first()
+                
+                if coupon and coupon.is_affiliate_code and coupon.is_active:
+                    logger.info(f"Processing affiliate referral code: {referral_code}")
+                    
+                    # Calculate commission amount before recording conversion
+                    commission_amount = coupon.calculate_affiliate_commission(order.total_amount)
+                    
+                    # Record the successful conversion (payment) and update affiliate stats
+                    coupon.record_conversion(order.total_amount)
+                    referral_code_processed = True
+                    
+                    logger.info(f"Affiliate commission processed: ${commission_amount:.2f} for affiliate {coupon.affiliate.name}")
+                    
+                    # Store commission info in order metadata
+                    if not order.order_metadata:
+                        order.order_metadata = {}
+                    order.order_metadata.update({
+                        'affiliate_commission': commission_amount,
+                        'affiliate_id': coupon.affiliate_id,
+                        'affiliate_name': coupon.affiliate.name,
+                        'commission_processed_at': datetime.utcnow().isoformat()
+                    })
+                    
+                else:
+                    logger.warning(f"Referral code {referral_code} not found or inactive")
+        except Exception as e:
+            logger.error(f"Error processing referral code: {str(e)}")
+            # Don't fail the payment process for referral code issues
         
         # Update user subscription - prioritize email lookup for inactive users
         subscription_updated = False
@@ -335,62 +769,74 @@ def payment_success():
         
         user = None
         
-        print(f"🔍 Starting user lookup process...")
-        print(f"🔍 JWT user_id: {current_user_id}")
-        print(f"🔍 Customer email: {customer_email}")
-        print(f"🔍 Order customer_name: {order.customer_name}")
+        logger.info("Starting user lookup process for payment success")
+        if not is_production():
+            logger.debug(f"JWT user_id: {current_user_id}")
+            logger.debug(f"Customer email: {customer_email}")
+            logger.debug(f"Order customer_name: {order.customer_name}")
+        
+        # Validate required data
+        if not customer_email:
+            logger.warning("No customer email provided in payment success")
+            return jsonify({'error': 'Customer email is required'}), 400
         
         # Strategy 1: Email lookup (most reliable for new users)
         if customer_email:
             user = User.query.filter_by(email=customer_email).first()
-            print(f"🔍 Email lookup - User found: {user.email if user else 'None'} (Email: {customer_email})")
-            if user:
-                print(f"🔍 User details - is_active: {user.is_active}, subscription_status: {user.subscription_status}, is_admin: {user.is_admin}")
+            if not is_production():
+                logger.debug(f"Email lookup - User found: {user.email if user else 'None'} (Email: {customer_email})")
+            if user and not is_production():
+                logger.debug(f"User details - is_active: {user.is_active}, subscription_status: {user.subscription_status}, is_admin: {user.is_admin}")
         
         # Strategy 2: If we have a JWT token, try to get user by ID (for existing users)
         if not user and current_user_id:
             user = User.query.get(current_user_id)
-            print(f"🔍 JWT lookup - User found: {user.email if user else 'None'} (ID: {current_user_id})")
+            if not is_production():
+                logger.debug(f"JWT lookup - User found: {user.email if user else 'None'} (ID: {current_user_id})")
         
         # Strategy 3: Try to find by order's user_id if available
         if not user and hasattr(order, 'user_id') and order.user_id:
             user = User.query.get(order.user_id)
-            print(f"🔍 Order user_id lookup - User found: {user.email if user else 'None'} (Order user_id: {order.user_id})")
-            if user:
-                print(f"🔍 User details - is_active: {user.is_active}, subscription_status: {user.subscription_status}, is_admin: {user.is_admin}")
+            if not is_production():
+                logger.debug(f"Order user_id lookup - User found: {user.email if user else 'None'} (Order user_id: {order.user_id})")
+            if user and not is_production():
+                logger.debug(f"User details - is_active: {user.is_active}, subscription_status: {user.subscription_status}, is_admin: {user.is_admin}")
         
         # Strategy 4: Try to find by customer name (fallback)
         if not user and order.customer_name:
             # Try exact username match first
             user = User.query.filter_by(username=order.customer_name).first()
-            if user:
-                print(f"🔍 Username lookup - User found: {user.email} (Username: {order.customer_name})")
+            if user and not is_production():
+                logger.debug(f"Username lookup - User found: {user.email} (Username: {order.customer_name})")
             else:
                 # Try to find by first_name or last_name
                 user = User.query.filter(
                     (User.first_name == order.customer_name) | 
                     (User.last_name == order.customer_name)
                 ).first()
-                if user:
-                    print(f"🔍 Name lookup - User found: {user.email} (Name: {order.customer_name})")
+                if user and not is_production():
+                    logger.debug(f"Name lookup - User found: {user.email} (Name: {order.customer_name})")
         
         if not user:
-            print(f"❌ No user found with any lookup method")
-            print(f"❌ Customer email: {customer_email}")
-            print(f"❌ Order customer_name: {order.customer_name}")
-            print(f"❌ JWT user_id: {current_user_id}")
-            print(f"❌ Order user_id: {getattr(order, 'user_id', 'Not available')}")
+            logger.error("No user found with any lookup method")
+            if not is_production():
+                logger.debug(f"Customer email: {customer_email}")
+                logger.debug(f"Order customer_name: {order.customer_name}")
+                logger.debug(f"JWT user_id: {current_user_id}")
+                logger.debug(f"Order user_id: {getattr(order, 'user_id', 'Not available')}")
             
-            # List all users for debugging
-            all_users = User.query.all()
-            print(f"🔍 All users in database: {[(u.id, u.email, u.username, u.is_active) for u in all_users]}")
+            # List all users for debugging (development only)
+            if not is_production():
+                all_users = User.query.all()
+                logger.debug(f"All users in database: {[(u.id, u.email, u.username, u.is_active) for u in all_users]}")
             
             return jsonify({
                 'error': f'No user found with email {customer_email}. Please contact support.',
                 'subscription_updated': False
             }), 404
         
-            print(f"🔍 JWT user ID: {current_user_id}")
+            if not is_production():
+                logger.debug(f"JWT user ID: {current_user_id}")
             
             # Log this as a critical error
             logger.error(f"Payment success called but no user found - email: {customer_email}, order_id: {order_id}")
@@ -404,6 +850,11 @@ def payment_success():
             # Update user subscription and activate account
             print(f"🔄 Updating user subscription for: {user.email} (ID: {user.id})")
             print(f"🔄 Before update - is_active: {user.is_active}, subscription_status: {user.subscription_status}, is_admin: {user.is_admin}")
+            
+            # Validate user data before updating
+            if not user.email:
+                logger.error("User has no email address")
+                return jsonify({'error': 'User email is missing'}), 400
             
             # Determine subscription plan from order items
             subscription_plan = 'premium'  # default
@@ -422,12 +873,17 @@ def payment_success():
             
             # Update user as a regular user (not admin) with active subscription
             print(f"🔄 Updating user fields...")
-            user.is_active = True
-            user.subscription_status = 'active'  # CRITICAL: Must be 'active' not 'premium' or other values
-            user.subscription_plan = subscription_plan
-            user.is_admin = False  # Ensure user is not admin (regular user)
-            user.updated_at = datetime.utcnow()
-            subscription_updated = True
+            try:
+                user.is_active = True
+                user.subscription_status = 'active'  # CRITICAL: Must be 'active' not 'premium' or other values
+                user.subscription_plan = subscription_plan
+                user.is_admin = False  # Ensure user is not admin (regular user)
+                user.updated_at = datetime.utcnow()
+                subscription_updated = True
+                logger.info("User fields updated successfully")
+            except Exception as e:
+                log_error_safely("Error updating user fields", e, include_details=False)
+                return jsonify({'error': 'Failed to update user subscription'}), 500
             
             # Create UserSubscription record
             print(f"🔄 Creating UserSubscription record...")
@@ -436,8 +892,13 @@ def payment_success():
                 from ..models.user_subscription import UserSubscription, SubscriptionStatus
                 from datetime import timedelta
                 
+                logger.debug("Imported subscription models successfully")
+                
                 # Find subscription plan
                 plan = None
+                if not is_production():
+                    logger.debug(f"Looking for subscription plan: {subscription_plan}")
+                
                 if subscription_plan == 'basic':
                     plan = SubscriptionPlan.query.filter_by(name='Basic').first()
                 elif subscription_plan == 'premium' or subscription_plan == 'pro':
@@ -447,6 +908,13 @@ def payment_success():
                 
                 if not plan:
                     plan = SubscriptionPlan.query.filter_by(name='Basic').first()
+                    if not is_production():
+                        logger.debug("Using fallback Basic plan")
+                
+                if plan:
+                    logger.info(f"Found subscription plan: {plan.name} (ID: {plan.id})")
+                else:
+                    logger.warning("No subscription plan found, skipping UserSubscription creation")
                 
                 if plan:
                     # Check if user already has an active subscription
@@ -456,35 +924,39 @@ def payment_success():
                     ).first()
                     
                     if not existing_subscription:
-                        subscription = UserSubscription(
-                            user_id=user.id,
-                            plan_id=plan.id,
-                            subscription_id=f"payment_{order.id}",
-                            plan_name=plan.name,
-                            plan_type=plan.billing_cycle.value,
-                            status=SubscriptionStatus.ACTIVE,
-                            amount=order.total_amount,
-                            currency='USD',
-                            billing_cycle=plan.billing_cycle.value,
-                            unit_amount=order.total_amount,
-                            total_amount=order.total_amount,
-                            start_date=datetime.utcnow(),
-                            end_date=datetime.utcnow() + timedelta(days=30),
-                            payment_method='card',
-                            payment_provider='stripe',
-                            payment_provider_id=payment_intent_id,
-                            admin_notes=f'Created from payment success for order {order.order_number}'
-                        )
-                        
-                        db.session.add(subscription)
-                        print(f"✅ Created UserSubscription {subscription.id} for user {user.email}")
+                        try:
+                            subscription = UserSubscription(
+                                user_id=user.id,
+                                plan_id=plan.id,
+                                subscription_id=f"payment_{order.id}",
+                                plan_name=plan.name,
+                                plan_type=plan.billing_cycle.value,
+                                status=SubscriptionStatus.ACTIVE,
+                                amount=order.total_amount,
+                                currency='USD',
+                                billing_cycle=plan.billing_cycle.value.upper(),
+                                unit_amount=order.total_amount,
+                                total_amount=order.total_amount,
+                                start_date=datetime.utcnow(),
+                                end_date=datetime.utcnow() + timedelta(days=30),
+                                payment_method='card',
+                                payment_provider='stripe',
+                                payment_provider_id=payment_intent_id,
+                                admin_notes=f'Created from payment success for order {order.order_number}'
+                            )
+                            
+                            db.session.add(subscription)
+                            logger.info(f"Created UserSubscription {subscription.id} for user {user.email}")
+                        except Exception as e:
+                            log_error_safely("Error creating UserSubscription", e, include_details=False)
+                            # Don't fail the payment process for this
                     else:
-                        print(f"ℹ️ User {user.email} already has active subscription {existing_subscription.id}")
+                        logger.info(f"User {user.email} already has active subscription {existing_subscription.id}")
                 else:
-                    print(f"⚠️ No subscription plan found for {subscription_plan}")
+                    logger.warning(f"No subscription plan found for {subscription_plan}")
                     
             except Exception as e:
-                print(f"❌ Error creating UserSubscription: {str(e)}")
+                log_error_safely("Database commit failed", e, include_details=False)
                 # Don't fail the payment process for this
             
             print(f"🔄 User fields updated:")
@@ -493,82 +965,128 @@ def payment_success():
             print(f"   subscription_plan: {user.subscription_plan}")
             print(f"   is_admin: {user.is_admin}")
             
-            print(f"✅ Updated subscription for user: {user.email} (ID: {user.id})")
-            print(f"✅ After update - is_active: {user.is_active}, subscription_status: {user.subscription_status}, subscription_plan: {user.subscription_plan}, is_admin: {user.is_admin}")
+            logger.info(f"Updated subscription for user: {user.email} (ID: {user.id})")
+            if not is_production():
+                logger.debug(f"After update - is_active: {user.is_active}, subscription_status: {user.subscription_status}, subscription_plan: {user.subscription_plan}, is_admin: {user.is_admin}")
             
             # Verify the changes are applied
-            db.session.flush()
-            print(f"✅ Database flush completed - changes should be visible")
-            
-            # Double-check the user state after flush
-            refreshed_user = User.query.get(user.id)
-            print(f"✅ User state after flush - is_active: {refreshed_user.is_active}, subscription_status: {refreshed_user.subscription_status}, is_admin: {refreshed_user.is_admin}")
+            try:
+                db.session.flush()
+                logger.info("Database flush completed - changes should be visible")
+                
+                # Double-check the user state after flush
+                refreshed_user = User.query.get(user.id)
+                if not is_production():
+                    logger.debug(f"User state after flush - is_active: {refreshed_user.is_active}, subscription_status: {refreshed_user.subscription_status}, is_admin: {refreshed_user.is_admin}")
+            except Exception as e:
+                log_error_safely("Error during database flush", e, include_details=False)
+                return jsonify({'error': 'Failed to save user changes'}), 500
             
             # Create a UserSubscription record for detailed tracking
             try:
                 from ..models.user_subscription import UserSubscription, BillingCycle, SubscriptionStatus
-                from billing_cycle_mapper import map_plan_billing_cycle_to_user
                 from ..models.subscription import SubscriptionPlan
+                
+                # Simple billing cycle mapping function (inline to avoid import issues)
+                def map_plan_billing_cycle_to_user(plan_name):
+                    """Map plan name to billing cycle for user display"""
+                    billing_cycles = {
+                        'basic': 'MONTHLY',
+                        'premium': 'MONTHLY', 
+                        'pro': 'MONTHLY',
+                        'enterprise': 'MONTHLY',
+                        'annual_basic': 'ANNUALLY',
+                        'annual_premium': 'ANNUALLY',
+                        'annual_pro': 'ANNUALLY',
+                        'annual_enterprise': 'ANNUALLY'
+                    }
+                    return billing_cycles.get(plan_name.lower(), 'MONTHLY')
                 
                 # Find the correct subscription plan based on order items
                 plan = None
-                for item in order.items:
-                    # Try to find plan by name - more flexible matching
-                    plan_name = item.product_name.lower()
-                    
-                    print(f"🔍 Looking for plan with product name: {item.product_name}")
-                    
-                    # First try exact name match
-                    plan = SubscriptionPlan.query.filter(
-                        SubscriptionPlan.name.ilike(f"%{item.product_name}%")
-                    ).first()
-                    
+                
+                # First try to get plan by ID if available in order metadata
+                plan_id = None
+                if order.order_metadata and 'plan_id' in order.order_metadata:
+                    plan_id = order.order_metadata['plan_id']
+                    if not is_production():
+                        logger.debug(f"Found plan_id in order metadata: {plan_id}")
+                
+                if plan_id:
+                    plan = SubscriptionPlan.query.get(plan_id)
                     if plan:
-                        print(f"✅ Found plan by exact match: {plan.name} (ID: {plan.id})")
-                        break
-                    
-                    # If no exact match, try common variations
-                    if 'basic' in plan_name:
-                        plan = SubscriptionPlan.query.filter_by(name='Basic').first()
+                        logger.info(f"Found plan by order metadata plan_id: {plan.name} (ID: {plan.id})")
+                
+                # If no plan found by ID, try to find by items
+                if not plan:
+                    for item in order.items:
+                        # Try to find plan by name - more flexible matching
+                        plan_name = item.product_name.lower()
+                        
+                        if not is_production():
+                            logger.debug(f"Looking for plan with product name: {item.product_name}")
+                        
+                        # Extract the actual plan name by removing "Subscription" suffix
+                        clean_plan_name = plan_name.replace(' subscription', '').replace(' plan', '').strip()
+                        if not is_production():
+                            logger.debug(f"Cleaned plan name: '{clean_plan_name}'")
+                        
+                        # First try exact name match with cleaned name
+                        plan = SubscriptionPlan.query.filter(
+                            SubscriptionPlan.name.ilike(f"%{clean_plan_name}%")
+                        ).first()
+                        
                         if plan:
-                            print(f"✅ Found plan by basic variation: {plan.name} (ID: {plan.id})")
+                            logger.info(f"Found plan by exact match: {plan.name} (ID: {plan.id})")
                             break
-                    elif 'professional' in plan_name or 'pro' in plan_name:
-                        plan = SubscriptionPlan.query.filter_by(name='Professional').first()
-                        if plan:
-                            print(f"✅ Found plan by professional variation: {plan.name} (ID: {plan.id})")
-                            break
-                    elif 'enterprise' in plan_name:
-                        plan = SubscriptionPlan.query.filter_by(name='Enterprise').first()
-                        if plan:
-                            print(f"✅ Found plan by enterprise variation: {plan.name} (ID: {plan.id})")
-                            break
-                    elif 'premium' in plan_name:
-                        plan = SubscriptionPlan.query.filter_by(name='Premium').first()
-                        if plan:
-                            print(f"✅ Found plan by premium variation: {plan.name} (ID: {plan.id})")
-                            break
-                    
-                    # If still no match, try to find any plan with similar name
-                    if not plan:
-                        all_plans = SubscriptionPlan.query.filter_by(is_active=True).all()
-                        for p in all_plans:
-                            if any(word in plan_name for word in p.name.lower().split()):
-                                plan = p
-                                print(f"✅ Found plan by fuzzy match: {plan.name} (ID: {plan.id})")
+                        
+                        # If no exact match, try common variations using cleaned name
+                        if 'basic' in clean_plan_name:
+                            plan = SubscriptionPlan.query.filter_by(name='Basic').first()
+                            if plan:
+                                logger.info(f"Found plan by basic variation: {plan.name} (ID: {plan.id})")
                                 break
-                    
-                    if plan:
-                        print(f"✅ Found plan: {plan.name} (ID: {plan.id}) for product: {item.product_name}")
-                        break
+                        elif 'professional' in clean_plan_name or 'pro' in clean_plan_name:
+                            plan = SubscriptionPlan.query.filter_by(name='Professional').first()
+                            if plan:
+                                logger.info(f"Found plan by professional variation: {plan.name} (ID: {plan.id})")
+                                break
+                        elif 'enterprise' in clean_plan_name:
+                            plan = SubscriptionPlan.query.filter_by(name='Enterprise').first()
+                            if plan:
+                                logger.info(f"Found plan by enterprise variation: {plan.name} (ID: {plan.id})")
+                                break
+                        elif 'premium' in clean_plan_name:
+                            plan = SubscriptionPlan.query.filter_by(name='Premium').first()
+                            if plan:
+                                logger.info(f"Found plan by premium variation: {plan.name} (ID: {plan.id})")
+                                break
+                        
+                        # If still no match, try to find any plan with similar name
+                        if not plan:
+                            all_plans = SubscriptionPlan.query.filter_by(is_active=True).all()
+                            for p in all_plans:
+                                if any(word in clean_plan_name for word in p.name.lower().split()):
+                                    plan = p
+                                    logger.info(f"Found plan by fuzzy match: {plan.name} (ID: {plan.id})")
+                                    break
+                        
+                        if plan:
+                            logger.info(f"Found plan: {plan.name} (ID: {plan.id}) for product: {item.product_name}")
+                            break
                 
                 # If no plan found, use Basic as default
                 if not plan:
-                    plan = SubscriptionPlan.query.filter_by(name='Basic').first()
-                    print(f"⚠️ No specific plan found, using Basic plan as default")
+                    plan = SubscriptionPlan.query.filter_by(name='Basic', is_active=True).first()
+                    logger.warning("No specific plan found, using Basic plan as default")
+                
+                # If still no plan, return error - plans should be pre-configured
+                if not plan:
+                    logger.error("No subscription plans configured in database")
+                    return jsonify({'error': 'No subscription plans available. Please contact support.'}), 500
                 
                 if plan:
-                    print(f"✅ Found plan: {plan.name} (ID: {plan.id})")
+                    logger.info(f"Found plan: {plan.name} (ID: {plan.id})")
                     
                     # Create subscription record with correct plan_id
                     new_subscription = UserSubscription(
@@ -592,35 +1110,37 @@ def payment_success():
                     )
                     
                     db.session.add(new_subscription)
-                    print(f"✅ Created UserSubscription record for user {user.id} with plan {plan.name}")
+                    logger.info(f"Created UserSubscription record for user {user.id} with plan {plan.name}")
                 else:
-                    print(f"❌ No subscription plan found, cannot create UserSubscription")
+                    logger.error("No subscription plan found, cannot create UserSubscription")
                 
             except Exception as e:
-                print(f"⚠️ Could not create UserSubscription record: {e}")
+                logger.warning(f"Could not create UserSubscription record: {e}")
                 # Continue without subscription record - user is still activated
             
             # Force a database flush to ensure changes are visible
             db.session.flush()
         else:
-            print(f"❌ Could not find user with JWT ID: {current_user_id}")
-            print(f"❌ Could not find user with email: {customer_email}")
-            print(f"❌ Order customer_name: {order.customer_name}")
-            print(f"❌ Order user_id: {getattr(order, 'user_id', 'Not available')}")
-            
-            # List all users for debugging
-            all_users = User.query.all()
-            print(f"🔍 All users in database: {[(u.id, u.email, u.is_active) for u in all_users]}")
+            logger.error("Could not find user for payment processing")
+            if not is_production():
+                logger.debug(f"JWT ID: {current_user_id}")
+                logger.debug(f"Customer email: {customer_email}")
+                logger.debug(f"Order customer_name: {order.customer_name}")
+                logger.debug(f"Order user_id: {getattr(order, 'user_id', 'Not available')}")
+                
+                # List all users for debugging (development only)
+                all_users = User.query.all()
+                logger.debug(f"All users in database: {[(u.id, u.email, u.is_active) for u in all_users]}")
         
         # Commit the transaction with retry logic
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 db.session.commit()
-                print(f"✅ Database transaction committed successfully (attempt {attempt + 1})")
+                logger.info(f"Database transaction committed successfully (attempt {attempt + 1})")
                 break
             except Exception as e:
-                print(f"❌ Database commit failed (attempt {attempt + 1}): {e}")
+                log_error_safely(f"Database commit failed (attempt {attempt + 1})", e, include_details=False)
                 if attempt < max_retries - 1:
                     db.session.rollback()
                     # Wait a bit before retry
@@ -636,43 +1156,68 @@ def payment_success():
         
         # Final verification - check if user is properly saved
         if subscription_updated and user:
-            # Force a fresh query from database to verify changes
-            db.session.expire(user)  # Expire the object to force fresh query
-            final_user = User.query.get(user.id)
-            print(f"🔍 Final verification - User {final_user.email}:")
-            print(f"   is_active: {final_user.is_active}")
-            print(f"   subscription_status: {final_user.subscription_status}")
-            print(f"   subscription_plan: {final_user.subscription_plan}")
-            print(f"   is_admin: {final_user.is_admin}")
-            
-            if (final_user.is_active and 
-                final_user.subscription_status == 'active' and 
-                final_user.subscription_plan and 
-                not final_user.is_admin):
-                print("🎉 User is properly saved as regular user with active subscription!")
-                print("🎉 Frontend should now recognize this user as having an active subscription!")
-            else:
-                print("⚠️ User is not properly configured - check database")
-                print(f"   Expected: is_active=True, subscription_status='active', is_admin=False")
-                print(f"   Actual: is_active={final_user.is_active}, subscription_status='{final_user.subscription_status}', is_admin={final_user.is_admin}")
+            try:
+                # Force a fresh query from database to verify changes
+                db.session.expire(user)  # Expire the object to force fresh query
+                final_user = User.query.get(user.id)
+                if not is_production():
+                    logger.debug(f"Final verification - User {final_user.email}:")
+                    logger.debug(f"   is_active: {final_user.is_active}")
+                print(f"   subscription_status: {final_user.subscription_status}")
+                print(f"   subscription_plan: {final_user.subscription_plan}")
+                print(f"   is_admin: {final_user.is_admin}")
                 
-                # If verification fails, return an error
+                if (final_user.is_active and 
+                    final_user.subscription_status == 'active' and 
+                    final_user.subscription_plan and 
+                    not final_user.is_admin):
+                    print("🎉 User is properly saved as regular user with active subscription!")
+                    print("🎉 Frontend should now recognize this user as having an active subscription!")
+                else:
+                    logger.warning("User is not properly configured - check database")
+                    if not is_production():
+                        logger.debug(f"   Expected: is_active=True, subscription_status='active', is_admin=False")
+                    print(f"   Actual: is_active={final_user.is_active}, subscription_status='{final_user.subscription_status}', is_admin={final_user.is_admin}")
+                    
+                    # If verification fails, return an error
+                    return jsonify({
+                        'error': 'User activation failed. Please contact support.',
+                        'subscription_updated': False
+                    }), 500
+            except Exception as e:
+                log_error_safely("Error during final verification", e, include_details=False)
                 return jsonify({
-                    'error': 'User activation failed. Please contact support.',
+                    'error': 'User activation verification failed. Please contact support.',
                     'subscription_updated': False
                 }), 500
         
-        return jsonify({
+        logger.info(f"Payment success endpoint completed successfully - Order: {order.order_number}, User: {user.email if user else 'N/A'}")
+        
+        response_data = {
             'success': True,
             'message': 'Payment processed successfully',
             'order': order.to_dict(),
             'payment': payment.to_dict(),
-            'subscription_updated': subscription_updated
-        }), 200
+            'subscription_updated': subscription_updated,
+            'user_activated': subscription_updated,
+            'referral_code_processed': referral_code_processed
+        }
+        
+        # Add affiliate commission info if processed
+        if referral_code_processed and order.order_metadata:
+            response_data['affiliate_commission'] = {
+                'amount': order.order_metadata.get('affiliate_commission', 0),
+                'affiliate_id': order.order_metadata.get('affiliate_id'),
+                'affiliate_name': order.order_metadata.get('affiliate_name'),
+                'processed_at': order.order_metadata.get('commission_processed_at')
+            }
+        
+        return jsonify(response_data), 200
         
     except Exception as e:
         db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+        log_error_safely("Payment success error", e, include_details=False)
+        return jsonify({'error': 'Payment processing failed'}), 500
 
 
 
@@ -807,7 +1352,7 @@ def activate_user():
         return jsonify({'error': 'Failed to activate user'}), 500
 
 @payments_bp.route('/stats', methods=['GET'])
-# @jwt_required()  # JWT authentication disabled due to validation issues
+@jwt_required()
 def get_payment_stats():
     """Get payment statistics for admin dashboard"""
     try:
@@ -850,7 +1395,7 @@ def get_payment_stats():
         return jsonify({'error': 'Failed to fetch payment statistics'}), 500
 
 @payments_bp.route('/user-countries', methods=['GET'])
-# @jwt_required()  # JWT authentication disabled due to validation issues
+@jwt_required()
 def get_user_countries():
     """Get user country distribution for analytics"""
     try:
@@ -968,7 +1513,7 @@ def reject_order(order_id):
         return jsonify({'error': 'Failed to reject order'}), 500
 
 @payments_bp.route('/invoices', methods=['GET'])
-# @jwt_required()  # JWT authentication disabled due to validation issues
+@jwt_required()
 def get_invoices():
     """Get all invoices (admin only)"""
     try:
@@ -1010,7 +1555,7 @@ def get_invoices():
         return jsonify({'error': 'Failed to fetch invoices'}), 500
 
 @payments_bp.route('/invoices', methods=['POST'])
-# @jwt_required()  # JWT authentication disabled due to validation issues
+@jwt_required()
 def create_invoice():
     """Create an invoice for a paid order"""
     try:
@@ -1071,7 +1616,7 @@ def create_invoice():
         return jsonify({'error': 'Failed to create invoice'}), 500
 
 @payments_bp.route('/invoice-stats', methods=['GET'])
-# @jwt_required()  # JWT authentication disabled due to validation issues
+@jwt_required()
 def get_invoice_stats():
     """Get invoice statistics for admin dashboard"""
     try:
@@ -1107,7 +1652,7 @@ def get_invoice_stats():
         return jsonify({'error': 'Failed to fetch invoice statistics'}), 500
 
 @payments_bp.route('/invoice/<int:order_id>/download', methods=['GET'])
-# @jwt_required()  # JWT authentication disabled due to validation issues
+@jwt_required()
 def download_invoice(order_id):
     """Download invoice as PDF"""
     try:
@@ -1136,7 +1681,7 @@ def download_invoice(order_id):
         return jsonify({'error': 'Failed to download invoice'}), 500
 
 @payments_bp.route('/invoice/<int:order_id>/send', methods=['POST'])
-# @jwt_required()  # JWT authentication disabled due to validation issues
+@jwt_required()
 def send_invoice(order_id):
     """Send invoice via email"""
     try:
@@ -1154,21 +1699,11 @@ def send_invoice(order_id):
         logger.error(f"Error sending invoice: {str(e)}")
         return jsonify({'error': 'Failed to send invoice'}), 500
 
-@payments_bp.route('/test-orders', methods=['GET'])
-def test_orders():
-    """Test orders endpoint without authentication"""
-    try:
-        orders = Order.query.order_by(Order.created_at.desc()).limit(5).all()
-        return jsonify({
-            'message': 'Orders test successful',
-            'total_orders': Order.query.count(),
-            'sample_orders': [order.to_dict() for order in orders]
-        }), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+# REMOVED: Test orders endpoint for security reasons
+# This endpoint was removed to prevent unauthorized data access in production
 
 @payments_bp.route('/verify-payment', methods=['POST'])
-# @jwt_required()  # JWT authentication disabled due to validation issues
+@jwt_required()
 def verify_payment():
     """Verify payment with Stripe for dispute resolution"""
     try:
@@ -1206,7 +1741,7 @@ def verify_payment():
         return jsonify({'error': 'Failed to verify payment'}), 500
 
 @payments_bp.route('/resolve-payment-dispute', methods=['POST'])
-# @jwt_required()  # JWT authentication disabled due to validation issues
+@jwt_required()
 def resolve_payment_dispute():
     """Manually resolve payment dispute by creating/updating order"""
     try:
@@ -1291,7 +1826,7 @@ def resolve_payment_dispute():
         return jsonify({'error': 'Failed to resolve payment dispute'}), 500
 
 @payments_bp.route('/search-payments', methods=['GET'])
-# @jwt_required()  # JWT authentication disabled due to validation issues
+@jwt_required()
 def search_payments():
     """Search for payments by various criteria for dispute resolution"""
     try:
@@ -1347,3 +1882,48 @@ def search_payments():
     except Exception as e:
         logger.error(f"Error searching payments: {str(e)}")
         return jsonify({'error': 'Failed to search payments'}), 500
+
+@payments_bp.route('/monitoring/dashboard', methods=['GET'])
+@jwt_required()
+def get_monitoring_dashboard():
+    """Get real-time payment monitoring dashboard data"""
+    try:
+        dashboard_data = payment_monitoring_service.get_monitoring_dashboard_data()
+        return jsonify(dashboard_data), 200
+    except Exception as e:
+        logger.error(f"Monitoring dashboard error: {str(e)}")
+        return jsonify({'error': 'Failed to get monitoring data'}), 500
+
+@payments_bp.route('/fraud/analysis', methods=['POST'])
+@jwt_required()
+def analyze_payment_fraud():
+    """Analyze payment for fraud (admin endpoint)"""
+    try:
+        data = request.get_json()
+        
+        # Get user data
+        user_data = {
+            'ip_address': request.remote_addr,
+            'user_agent': request.headers.get('User-Agent', ''),
+            'user_id': data.get('user_id')
+        }
+        
+        # Analyze fraud risk
+        fraud_analysis = fraud_detection_service.analyze_payment_risk(data, user_data)
+        
+        return jsonify(fraud_analysis), 200
+        
+    except Exception as e:
+        logger.error(f"Fraud analysis error: {str(e)}")
+        return jsonify({'error': 'Failed to analyze fraud risk'}), 500
+
+@payments_bp.route('/pci/compliance-check', methods=['GET'])
+@jwt_required()
+def check_pci_compliance():
+    """Check PCI DSS compliance status"""
+    try:
+        compliance_status = pci_compliance_service.validate_pci_requirements({})
+        return jsonify(compliance_status), 200
+    except Exception as e:
+        logger.error(f"PCI compliance check error: {str(e)}")
+        return jsonify({'error': 'Failed to check PCI compliance'}), 500

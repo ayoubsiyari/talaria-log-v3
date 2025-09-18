@@ -143,11 +143,160 @@ class SecurityService {
   }
 
   /**
-   * Create secure payment request
+   * Generate HMAC signature for request signing
+   */
+  async generateSignature(data, timestamp) {
+    try {
+      // Get the secret key from backend config - must match backend SECRET_KEY
+      const secretKey = 'your-secret-key-here'; // This matches the .env SECRET_KEY
+      
+      // Create payload with timestamp
+      const payload = `${timestamp}:${data}`;
+      
+      // Check if Web Crypto API is available (HTTPS context)
+      if (window.crypto && window.crypto.subtle && window.isSecureContext) {
+        console.log('🔐 Using Web Crypto API for signature generation');
+        
+        // Generate HMAC signature using Web Crypto API
+        const encoder = new TextEncoder();
+        const key = await window.crypto.subtle.importKey(
+          'raw',
+          encoder.encode(secretKey),
+          { name: 'HMAC', hash: 'SHA-256' },
+          false,
+          ['sign']
+        );
+        
+        const signature = await window.crypto.subtle.sign(
+          'HMAC',
+          key,
+          encoder.encode(payload)
+        );
+        
+        // Convert to hex string
+        const hashArray = Array.from(new Uint8Array(signature));
+        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        
+        return hashHex;
+      } else {
+        // Fallback for HTTP contexts (development)
+        console.warn('⚠️ Web Crypto API not available, using fallback signature generation');
+        console.warn('⚠️ This is only suitable for development environments');
+        
+        // Simple fallback - create a deterministic hash-like signature
+        // This is NOT cryptographically secure but works for development
+        let hash = 0;
+        const fullPayload = secretKey + payload;
+        for (let i = 0; i < fullPayload.length; i++) {
+          const char = fullPayload.charCodeAt(i);
+          hash = ((hash << 5) - hash) + char;
+          hash = hash & hash; // Convert to 32bit integer
+        }
+        
+        // Convert to positive hex string
+        const fallbackSignature = Math.abs(hash).toString(16).padStart(8, '0') + 
+                                   Date.now().toString(16).slice(-8);
+        
+        console.log('🔧 Generated fallback signature for development:', fallbackSignature.substring(0, 16) + '...');
+        return fallbackSignature;
+      }
+    } catch (error) {
+      console.error('Failed to generate signature:', error);
+      // Final fallback: return a deterministic but simple signature
+      const simpleHash = btoa(secretKey + timestamp + data).replace(/[^a-zA-Z0-9]/g, '').toLowerCase().substring(0, 32);
+      console.warn('🚨 Using emergency fallback signature:', simpleHash.substring(0, 16) + '...');
+      return simpleHash;
+    }
+  }
+
+  /**
+   * Create secure payment request with proper request signing
    */
   async createSecurePaymentRequest(endpoint, data) {
     try {
-      // Validate data
+      // Check if this is a payment success request (different validation)
+      if (endpoint === '/payments/payment-success' || endpoint.endsWith('/payment-success')) {
+        // For payment success, only validate required fields
+        if (!data.order_id || !data.payment_intent_id || !data.customer_email) {
+          throw new Error('Validation failed: Missing required fields for payment success');
+        }
+        
+        // Validate email format even for payment success
+        if (!this.validateEmail(data.customer_email)) {
+          throw new Error('Validation failed: Invalid email format');
+        }
+        
+        // Sanitize payment success data
+        const sanitizedData = {
+          ...data,
+          customer_email: this.sanitizeInput(data.customer_email),
+          order_id: this.sanitizeInput(data.order_id),
+          payment_intent_id: this.sanitizeInput(data.payment_intent_id)
+        };
+        
+        // Get CSRF token for security
+        try {
+          const csrfToken = await this.getCSRFToken();
+          sanitizedData.csrf_token = csrfToken;
+        } catch (csrfError) {
+          console.warn('⚠️ CSRF token not available for payment success:', csrfError.message);
+        }
+        
+        // Check if we're in development mode
+        const isDevelopment = window.location.hostname === 'localhost' || 
+                             window.location.hostname === '127.0.0.1' ||
+                             import.meta.env?.MODE === 'development';
+        
+        // Prepare headers
+        const headers = {
+          'Content-Type': 'application/json'
+        };
+        
+        // Add authentication if available
+        const accessToken = localStorage.getItem('access_token');
+        if (accessToken) {
+          headers['Authorization'] = `Bearer ${accessToken}`;
+        }
+        
+        if (isDevelopment) {
+          console.log('🔧 Development mode: Skipping request signing for payment success');
+          console.log('🔧 Backend will accept unsigned requests in development mode');
+        } else {
+          // Production mode: Generate request signature
+          console.log('🔐 Production mode: Generating request signature');
+          
+          const timestamp = Math.floor(Date.now() / 1000);
+          // Match backend JSON format: sort_keys=True, separators=(',', ':')
+          const sortedKeys = Object.keys(sanitizedData).sort();
+          const sortedData = {};
+          sortedKeys.forEach(key => {
+            sortedData[key] = sanitizedData[key];
+          });
+          const dataString = JSON.stringify(sortedData).replace(/\s/g, '');
+          
+          try {
+            const signature = await this.generateSignature(dataString, timestamp);
+            headers['X-Request-Signature'] = signature;
+            headers['X-Request-Timestamp'] = timestamp.toString();
+            console.log('✅ Request signature generated for payment success');
+          } catch (sigError) {
+            console.error('❌ Signature generation failed in production:', sigError.message);
+            throw new Error('Failed to generate request signature in production mode');
+          }
+        }
+        
+        // Make request
+        const response = await fetch(`${this.baseURL}${endpoint}`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: headers,
+          body: JSON.stringify(sanitizedData)
+        });
+
+        return response;
+      }
+
+      // For regular payment data, use full validation
       const validation = this.validatePaymentData(data);
       if (!validation.isValid) {
         throw new Error(`Validation failed: ${validation.errors.join(', ')}`);
@@ -174,7 +323,7 @@ class SecurityService {
         // Continue without CSRF token in development
       }
 
-      // Make request
+      // Make request (regular endpoints don't require signing)
       const response = await fetch(`${this.baseURL}${endpoint}`, {
         method: 'POST',
         credentials: 'include',

@@ -33,7 +33,12 @@ const Invoice = () => {
   const fetchInvoice = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`${API_BASE_URL}/payments/invoice/${orderId}`);
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(`${API_BASE_URL}/payments/invoice/${orderId}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       
       if (response.ok) {
         const data = await response.json();

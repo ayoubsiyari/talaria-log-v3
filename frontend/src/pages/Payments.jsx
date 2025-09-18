@@ -41,7 +41,7 @@ const Payments = () => {
   const loadOrders = async () => {
     try {
       setLoading(true);
-      const token = localStorage.getItem('accessToken');
+      const token = localStorage.getItem('access_token');
       
       const params = new URLSearchParams({
         page: currentPage,
@@ -152,7 +152,7 @@ const Payments = () => {
   const handleApproveOrder = async (orderId) => {
     try {
       setProcessingOrder(orderId);
-      const token = localStorage.getItem('accessToken');
+      const token = localStorage.getItem('access_token');
       const response = await fetch(`${API_BASE_URL}/payments/orders/${orderId}/approve`, {
         method: 'POST',
         headers: {
@@ -178,7 +178,7 @@ const Payments = () => {
   const handleRejectOrder = async (orderId) => {
     try {
       setProcessingOrder(orderId);
-      const token = localStorage.getItem('accessToken');
+      const token = localStorage.getItem('access_token');
       const response = await fetch(`${API_BASE_URL}/payments/orders/${orderId}/reject`, {
         method: 'POST',
         headers: {
@@ -204,7 +204,7 @@ const Payments = () => {
   const handleRefundOrder = async (orderId) => {
     try {
       setProcessingOrder(orderId);
-      const token = localStorage.getItem('accessToken');
+      const token = localStorage.getItem('access_token');
       const response = await fetch(`${API_BASE_URL}/payments/orders/${orderId}/refund`, {
         method: 'POST',
         headers: {

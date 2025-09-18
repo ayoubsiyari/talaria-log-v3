@@ -37,31 +37,49 @@ const FinancialReports = () => {
   const fetchFinancialData = async () => {
     setLoading(true);
     try {
+      const token = localStorage.getItem('access_token');
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      };
+      
       const [paymentStatsRes, invoiceStatsRes, ordersRes, invoicesRes] = await Promise.all([
-        fetch('http://localhost:5000/api/payments/stats'),
-        fetch('http://localhost:5000/api/payments/invoice-stats'),
-        fetch('http://localhost:5000/api/payments/orders?page=1&per_page=50'),
-        fetch('http://localhost:5000/api/payments/invoices?page=1&per_page=50')
+        fetch('http://localhost:5000/api/payments/stats', { headers }),
+        fetch('http://localhost:5000/api/payments/invoice-stats', { headers }),
+        fetch('http://localhost:5000/api/payments/orders?page=1&per_page=50', { headers }),
+        fetch('http://localhost:5000/api/payments/invoices?page=1&per_page=50', { headers })
       ]);
 
       if (paymentStatsRes.ok) {
         const paymentData = await paymentStatsRes.json();
+        console.log('Payment stats data:', paymentData);
         setPaymentStats(paymentData);
+      } else {
+        console.error('Failed to fetch payment stats:', paymentStatsRes.status, paymentStatsRes.statusText);
       }
 
       if (invoiceStatsRes.ok) {
         const invoiceData = await invoiceStatsRes.json();
+        console.log('Invoice stats data:', invoiceData);
         setInvoiceStats(invoiceData);
+      } else {
+        console.error('Failed to fetch invoice stats:', invoiceStatsRes.status, invoiceStatsRes.statusText);
       }
 
       if (ordersRes.ok) {
         const ordersData = await ordersRes.json();
+        console.log('Orders data:', ordersData);
         setOrders(ordersData.orders || []);
+      } else {
+        console.error('Failed to fetch orders:', ordersRes.status, ordersRes.statusText);
       }
 
       if (invoicesRes.ok) {
         const invoicesData = await invoicesRes.json();
+        console.log('Invoices data:', invoicesData);
         setInvoices(invoicesData.invoices || []);
+      } else {
+        console.error('Failed to fetch invoices:', invoicesRes.status, invoicesRes.statusText);
       }
 
       // Generate real revenue data from actual orders

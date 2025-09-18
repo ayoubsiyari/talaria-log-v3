@@ -191,7 +191,12 @@ class AdminUser(db.Model):
     
     def check_password(self, password):
         """Check admin user password"""
-        return check_password_hash(self.password_hash, password)
+        # Handle both string and bytes password hashes
+        if isinstance(self.password_hash, bytes):
+            password_hash = self.password_hash.decode('utf-8')
+        else:
+            password_hash = self.password_hash
+        return check_password_hash(password_hash, password)
 
     def to_dict(self):
         """Convert admin user to dictionary"""

@@ -667,11 +667,8 @@ def list_users():
         }), 200
 
     except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        logger.error(f"Error listing users: {str(e)}\nFull traceback:\n{error_details}")
+        logger.error(f"Error listing users: {str(e)}")
         print(f"ERROR IN LIST_USERS: {str(e)}")
-        print(f"FULL TRACEBACK:\n{error_details}")
         return jsonify({'success': False, 'error': 'Failed to retrieve users'}), 500
 
 
@@ -3201,6 +3198,548 @@ def get_affiliates_analytics():
         
     except Exception as e:
         return jsonify({'error': f'Failed to fetch affiliates analytics: {str(e)}'}), 500
+
+# Temporary test route without JWT for debugging
+@admin_bp.route('/affiliates/test', methods=['GET'])
+def test_affiliates():
+    """Test endpoint to check affiliate data without authentication."""
+    try:
+        from ..models.affiliate import Affiliate
+        
+        affiliates = Affiliate.query.all()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Test endpoint working',
+            'count': len(affiliates),
+            'data': [affiliate.to_dict() for affiliate in affiliates]
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Test endpoint error: {str(e)}'
+        }), 500
+
+# Affiliate CRUD Endpoints
+@admin_bp.route('/affiliates', methods=['GET'])
+@jwt_required()
+def get_affiliates():
+    """Get all affiliates with optional filtering and search."""
+    try:
+        from ..models.affiliate import Affiliate
+        
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 20, type=int)
+        search = request.args.get('q', '', type=str)
+        status = request.args.get('status', '', type=str)
+        
+        # Build query
+        query = Affiliate.query
+        
+        # Apply search filter
+        if search:
+            query = query.filter(
+                or_(
+                    Affiliate.name.ilike(f'%{search}%'),
+                    Affiliate.email.ilike(f'%{search}%'),
+                    Affiliate.category.ilike(f'%{search}%')
+                )
+            )
+        
+        # Apply status filter
+        if status and status != 'all':
+            query = query.filter(Affiliate.status == status)
+        
+        # Apply pagination
+        affiliates = query.paginate(
+            page=page, 
+            per_page=per_page, 
+            error_out=False
+        )
+        
+        return jsonify({
+            'success': True,
+            'data': [affiliate.to_dict() for affiliate in affiliates.items],
+            'pagination': {
+                'page': page,
+                'pages': affiliates.pages,
+                'per_page': per_page,
+                'total': affiliates.total,
+                'has_next': affiliates.has_next,
+                'has_prev': affiliates.has_prev
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error fetching affiliates: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Failed to fetch affiliates'
+        }), 500
+
+@admin_bp.route('/affiliates', methods=['POST'])
+@jwt_required()
+def create_affiliate():
+    """Create a new affiliate."""
+    try:
+        from ..models.affiliate import Affiliate
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'error': 'No data provided'}), 400
+        
+        required_fields = ['name', 'email']
+        for field in required_fields:
+            if field not in data or not data[field]:
+                return jsonify({'success': False, 'error': f'{field} is required'}), 400
+        
+        # Check if email already exists
+        existing_affiliate = Affiliate.query.filter_by(email=data['email']).first()
+        if existing_affiliate:
+            return jsonify({'success': False, 'error': 'Email already exists'}), 409
+        
+        # Create new affiliate
+        affiliate = Affiliate.create(
+            name=data['name'],
+            email=data['email'],
+            commission_rate=data.get('commissionRate', 20.0),
+            website=data.get('website'),
+            social_media=data.get('socialMedia'),
+            category=data.get('category', 'Other'),
+            notes=data.get('notes')
+        )
+        
+        return jsonify({
+            'success': True,
+            'data': affiliate.to_dict(),
+            'message': 'Affiliate created successfully'
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Error creating affiliate: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Failed to create affiliate'
+        }), 500
+
+@admin_bp.route('/affiliates/<int:affiliate_id>', methods=['GET'])
+@jwt_required()
+def get_affiliate(affiliate_id):
+    """Get a specific affiliate by ID."""
+    try:
+        from ..models.affiliate import Affiliate
+        
+        affiliate = Affiliate.query.get_or_404(affiliate_id)
+        return jsonify({
+            'success': True,
+            'data': affiliate.to_dict()
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error fetching affiliate: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Failed to fetch affiliate'
+        }), 500
+
+@admin_bp.route('/affiliates/<int:affiliate_id>', methods=['PUT'])
+@jwt_required()
+def update_affiliate(affiliate_id):
+    """Update an affiliate."""
+    try:
+        from ..models.affiliate import Affiliate
+        
+        affiliate = Affiliate.query.get_or_404(affiliate_id)
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'success': False, 'error': 'No data provided'}), 400
+        
+        # Check if email update conflicts with existing affiliate
+        if 'email' in data and data['email'] != affiliate.email:
+            existing = Affiliate.query.filter_by(email=data['email']).first()
+            if existing:
+                return jsonify({'success': False, 'error': 'Email already exists'}), 409
+        
+        # Update fields
+        updateable_fields = [
+            'name', 'email', 'commission_rate', 'total_earnings', 'referrals', 
+            'conversions', 'website', 'social_media', 'category', 'notes'
+        ]
+        
+        update_data = {}
+        for field in updateable_fields:
+            snake_case_field = field
+            camel_case_field = ''.join(word.capitalize() if i > 0 else word for i, word in enumerate(field.split('_')))
+            
+            if camel_case_field in data:
+                update_data[snake_case_field] = data[camel_case_field]
+            elif field in data:
+                update_data[snake_case_field] = data[field]
+        
+        # Recalculate conversion rate if referrals or conversions changed
+        if 'referrals' in update_data or 'conversions' in update_data:
+            affiliate.referrals = update_data.get('referrals', affiliate.referrals)
+            affiliate.conversions = update_data.get('conversions', affiliate.conversions)
+            affiliate.update_conversion_rate()
+            affiliate.calculate_performance()
+        
+        affiliate.update(**update_data)
+        
+        return jsonify({
+            'success': True,
+            'data': affiliate.to_dict(),
+            'message': 'Affiliate updated successfully'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error updating affiliate: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Failed to update affiliate'
+        }), 500
+
+@admin_bp.route('/affiliates/<int:affiliate_id>', methods=['DELETE'])
+@jwt_required()
+def delete_affiliate(affiliate_id):
+    """Delete an affiliate."""
+    try:
+        from ..models.affiliate import Affiliate
+        
+        affiliate = Affiliate.query.get_or_404(affiliate_id)
+        affiliate.delete()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Affiliate deleted successfully'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error deleting affiliate: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Failed to delete affiliate'
+        }), 500
+
+@admin_bp.route('/affiliates/<int:affiliate_id>/approve', methods=['POST'])
+@jwt_required()
+def approve_affiliate(affiliate_id):
+    """Approve a pending affiliate."""
+    try:
+        from ..models.affiliate import Affiliate
+        
+        affiliate = Affiliate.query.get_or_404(affiliate_id)
+        affiliate.update(status='active')
+        
+        return jsonify({
+            'success': True,
+            'data': affiliate.to_dict(),
+            'message': 'Affiliate approved successfully'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error approving affiliate: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Failed to approve affiliate'
+        }), 500
+
+@admin_bp.route('/affiliates/<int:affiliate_id>/suspend', methods=['POST'])
+@jwt_required()
+def suspend_affiliate(affiliate_id):
+    """Suspend an active affiliate."""
+    try:
+        from ..models.affiliate import Affiliate
+        
+        affiliate = Affiliate.query.get_or_404(affiliate_id)
+        affiliate.update(status='suspended')
+        
+        return jsonify({
+            'success': True,
+            'data': affiliate.to_dict(),
+            'message': 'Affiliate suspended successfully'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error suspending affiliate: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Failed to suspend affiliate'
+        }), 500
+
+# Affiliate Referral Code Endpoints
+@admin_bp.route('/affiliates/<int:affiliate_id>/generate-code', methods=['POST'])
+@jwt_required()
+def generate_affiliate_code(affiliate_id):
+    """Generate a new referral code for an affiliate."""
+    try:
+        from ..models.affiliate import Affiliate
+        from ..models.coupon import Coupon
+        
+        affiliate = Affiliate.query.get_or_404(affiliate_id)
+        data = request.get_json() or {}
+        
+        # Extract parameters
+        custom_code = data.get('code')
+        discount_percent = data.get('discount_percent', 10)
+        commission_percent = data.get('commission_percent', affiliate.commission_rate)
+        description = data.get('description')
+        
+        # Check if custom code already exists
+        if custom_code:
+            existing = Coupon.query.filter_by(code=custom_code).first()
+            if existing:
+                return jsonify({
+                    'success': False, 
+                    'error': 'Code already exists'
+                }), 409
+        
+        # Create the referral code
+        referral_code = Coupon.create_affiliate_code(
+            affiliate_id=affiliate_id,
+            code=custom_code,
+            discount_percent=discount_percent,
+            commission_percent=commission_percent,
+            description=description
+        )
+        
+        return jsonify({
+            'success': True,
+            'data': referral_code.to_dict(),
+            'message': 'Referral code generated successfully'
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Error generating affiliate code: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Failed to generate referral code'
+        }), 500
+
+@admin_bp.route('/affiliates/<int:affiliate_id>/codes', methods=['GET'])
+@jwt_required()
+def get_affiliate_codes(affiliate_id):
+    """Get all referral codes for an affiliate."""
+    try:
+        from ..models.affiliate import Affiliate
+        from ..models.coupon import Coupon
+        
+        affiliate = Affiliate.query.get_or_404(affiliate_id)
+        
+        # Get all referral codes for this affiliate
+        codes = Coupon.query.filter_by(
+            affiliate_id=affiliate_id,
+            is_affiliate_code=True
+        ).order_by(Coupon.created_at.desc()).all()
+        
+        return jsonify({
+            'success': True,
+            'data': [code.to_dict() for code in codes],
+            'affiliate': {
+                'id': affiliate.id,
+                'name': affiliate.name,
+                'email': affiliate.email,
+                'commission_rate': affiliate.commission_rate
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error fetching affiliate codes: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Failed to fetch referral codes'
+        }), 500
+
+@admin_bp.route('/affiliates/<int:affiliate_id>/referrals', methods=['GET'])
+@jwt_required()
+def get_affiliate_referrals(affiliate_id):
+    """Get all referrals for an affiliate."""
+    try:
+        from ..models.affiliate import Affiliate
+        from ..models.user_referral import UserReferral
+        from ..models.coupon import Coupon
+        from ..models.user import User
+        from sqlalchemy import or_
+        
+        affiliate = Affiliate.query.get_or_404(affiliate_id)
+        
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 20, type=int)
+        status_filter = request.args.get('status', '')  # all, referred, registered, converted
+        
+        # Build query for user referrals
+        query = UserReferral.query.filter_by(affiliate_id=affiliate_id)
+        
+        # Apply status filter
+        if status_filter == 'referred':
+            query = query.filter(
+                UserReferral.registered_at.is_(None),
+                UserReferral.is_converted == False
+            )
+        elif status_filter == 'registered':
+            query = query.filter(
+                UserReferral.registered_at.is_not(None),
+                UserReferral.is_converted == False
+            )
+        elif status_filter == 'converted':
+            query = query.filter(UserReferral.is_converted == True)
+        
+        # Apply pagination
+        referrals_paginated = query.order_by(UserReferral.referred_at.desc()).paginate(
+            page=page,
+            per_page=per_page,
+            error_out=False
+        )
+        
+        # For backward compatibility, also get users who used affiliate codes directly
+        # This is for cases where UserReferral records might not exist yet
+        affiliate_codes = Coupon.query.filter_by(
+            affiliate_id=affiliate_id,
+            is_affiliate_code=True
+        ).all()
+        
+        # Get users from subscriptions that used these codes (if payment system tracks it)
+        # This is a fallback for existing data before UserReferral model existed
+        legacy_referrals = []
+        if affiliate_codes and referrals_paginated.total == 0:
+            # This would need to be implemented based on your payment system
+            # For now, we'll use mock data to show the structure
+            pass
+        
+        # Calculate summary stats
+        total_referrals = UserReferral.query.filter_by(affiliate_id=affiliate_id).count()
+        total_registered = UserReferral.query.filter_by(
+            affiliate_id=affiliate_id
+        ).filter(UserReferral.registered_at.is_not(None)).count()
+        total_converted = UserReferral.query.filter_by(
+            affiliate_id=affiliate_id,
+            is_converted=True
+        ).count()
+        total_commission = db.session.query(
+            db.func.sum(UserReferral.commission_earned)
+        ).filter(
+            UserReferral.affiliate_id == affiliate_id,
+            UserReferral.commission_earned.is_not(None)
+        ).scalar() or 0.0
+        
+        return jsonify({
+            'success': True,
+            'data': [referral.to_dict() for referral in referrals_paginated.items],
+            'pagination': {
+                'page': page,
+                'pages': referrals_paginated.pages,
+                'per_page': per_page,
+                'total': referrals_paginated.total,
+                'has_next': referrals_paginated.has_next,
+                'has_prev': referrals_paginated.has_prev
+            },
+            'summary': {
+                'total_referrals': total_referrals,
+                'total_registered': total_registered,
+                'total_converted': total_converted,
+                'total_commission': float(total_commission),
+                'conversion_rate': round((total_converted / total_referrals * 100) if total_referrals > 0 else 0, 1)
+            },
+            'affiliate': {
+                'id': affiliate.id,
+                'name': affiliate.name,
+                'email': affiliate.email,
+                'commission_rate': affiliate.commission_rate
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error fetching affiliate referrals: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Failed to fetch affiliate referrals'
+        }), 500
+
+@admin_bp.route('/referral-codes/<int:code_id>', methods=['DELETE'])
+@jwt_required()
+def delete_referral_code(code_id):
+    """Delete/deactivate a referral code."""
+    try:
+        from ..models.coupon import Coupon
+        
+        code = Coupon.query.filter_by(
+            id=code_id, 
+            is_affiliate_code=True
+        ).first_or_404()
+        
+        # Deactivate instead of delete to preserve analytics
+        code.is_active = False
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Referral code deactivated successfully'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error deleting referral code: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Failed to delete referral code'
+        }), 500
+
+@admin_bp.route('/referral-codes/validate', methods=['POST'])
+def validate_referral_code():
+    """Validate a referral code (public endpoint for checkout)."""
+    try:
+        from ..models.coupon import Coupon
+        
+        data = request.get_json()
+        if not data or 'code' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'Code is required'
+            }), 400
+        
+        code = data['code'].upper().strip()
+        amount = data.get('amount', 0)
+        plan_id = data.get('plan_id')
+        
+        # Find the coupon
+        coupon = Coupon.query.filter_by(code=code, is_active=True).first()
+        
+        if not coupon:
+            return jsonify({
+                'success': False,
+                'error': 'Invalid referral code'
+            }), 404
+        
+        # Validate the coupon
+        if not coupon.is_valid(plan_id=plan_id, amount=amount):
+            return jsonify({
+                'success': False,
+                'error': 'Referral code is not valid or has expired'
+            }), 400
+        
+        # Calculate discount
+        discounted_amount = coupon.apply_discount(amount) if amount else 0
+        discount_amount = amount - discounted_amount if amount else 0
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'code': coupon.code,
+                'description': coupon.description,
+                'discount_percent': coupon.discount_percent,
+                'discount_amount': discount_amount,
+                'discounted_total': discounted_amount,
+                'is_affiliate_code': coupon.is_affiliate_code,
+                'affiliate_name': coupon.affiliate.name if coupon.affiliate else None
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error validating referral code: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Failed to validate referral code'
+        }), 500
 
 @admin_bp.route('/subscriptions/analytics', methods=['GET'])
 @jwt_required()

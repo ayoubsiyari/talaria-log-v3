@@ -22,7 +22,7 @@ export default function Breadcrumb({ activeItem, onItemClick }) {
         variant="ghost"
         size="sm"
         className="h-6 px-2 text-muted-foreground hover:text-foreground"
-        onClick={() => onItemClick('dashboard')}
+        onClick={() => onItemClick('dashboard', '/')}
       >
         <Home className="w-3 h-3" />
       </Button>

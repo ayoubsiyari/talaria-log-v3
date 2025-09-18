@@ -7,6 +7,8 @@ from .subscription import SubscriptionPlan, SubscriptionInvoice, BillingCycle, S
 from .user_subscription import UserSubscription
 from .coupon import Coupon
 from .promotion import Promotion
+from .affiliate import Affiliate
+from .user_referral import UserReferral
 
 __all__ = [
     'AdminUser',
@@ -25,5 +27,7 @@ __all__ = [
     'BillingCycle',
     'SubscriptionStatus',
     'Coupon',
-    'Promotion'
-] 
+    'Promotion',
+    'Affiliate',
+    'UserReferral'
+]

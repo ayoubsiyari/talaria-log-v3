@@ -1,62 +1,171 @@
-"use client"
+import React, { createContext, useContext, useState, useRef, useCallback } from 'react';
+import { cn } from '@/lib/utils';
 
-import * as React from "react"
-import * as TabsPrimitive from "@radix-ui/react-tabs"
+const TabsContext = createContext();
 
-import { cn } from "@/lib/utils"
+const Tabs = ({ defaultValue, value, onValueChange, className, children, ...props }) => {
+  const [internalState, setInternalState] = useState(defaultValue);
+  const isControlled = value !== undefined;
+  const selectedValue = isControlled ? value : internalState;
+  const triggerRefs = useRef(new Map());
 
-function Tabs({
-  className,
-  ...props
-}) {
+  const handleValueChange = (newValue) => {
+    if (!isControlled) {
+      setInternalState(newValue);
+    }
+    onValueChange?.(newValue);
+  };
+
+  const registerTrigger = useCallback((value, ref) => {
+    triggerRefs.current.set(value, ref);
+  }, []);
+
+  const unregisterTrigger = useCallback((value) => {
+    triggerRefs.current.delete(value);
+  }, []);
+
+  const getTriggerValues = useCallback(() => {
+    return Array.from(triggerRefs.current.keys());
+  }, []);
+
+  const focusTrigger = useCallback((value) => {
+    const ref = triggerRefs.current.get(value);
+    if (ref?.current) {
+      ref.current.focus();
+    }
+  }, []);
+
   return (
-    <TabsPrimitive.Root
-      data-slot="tabs"
-      className={cn("flex flex-col gap-2", className)}
-      {...props} />
+    <TabsContext.Provider value={{ 
+      selectedValue, 
+      onValueChange: handleValueChange,
+      registerTrigger,
+      unregisterTrigger,
+      getTriggerValues,
+      focusTrigger
+    }}>
+      <div className={cn('w-full', className)} {...props}>
+        {children}
+      </div>
+    </TabsContext.Provider>
   );
-}
+};
 
-function TabsList({
-  className,
-  ...props
-}) {
+const TabsList = ({ className, children, ...props }) => {
+  const { getTriggerValues, onValueChange, focusTrigger } = useContext(TabsContext);
+
+  const handleKeyDown = (event) => {
+    const triggerValues = getTriggerValues();
+    if (triggerValues.length === 0) return;
+
+    const currentIndex = triggerValues.findIndex(value => 
+      document.activeElement?.getAttribute('data-tab-value') === value
+    );
+
+    let newIndex = currentIndex;
+
+    switch (event.key) {
+      case 'ArrowLeft':
+        event.preventDefault();
+        newIndex = currentIndex > 0 ? currentIndex - 1 : triggerValues.length - 1;
+        break;
+      case 'ArrowRight':
+        event.preventDefault();
+        newIndex = currentIndex < triggerValues.length - 1 ? currentIndex + 1 : 0;
+        break;
+      case 'Home':
+        event.preventDefault();
+        newIndex = 0;
+        break;
+      case 'End':
+        event.preventDefault();
+        newIndex = triggerValues.length - 1;
+        break;
+      default:
+        return;
+    }
+
+    const newValue = triggerValues[newIndex];
+    onValueChange(newValue);
+    focusTrigger(newValue);
+  };
+
   return (
-    <TabsPrimitive.List
-      data-slot="tabs-list"
+    <div
+      role="tablist"
       className={cn(
-        "bg-muted text-muted-foreground inline-flex h-9 w-fit items-center justify-center rounded-lg p-[3px]",
+        'inline-flex h-10 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground',
         className
       )}
-      {...props} />
+      onKeyDown={handleKeyDown}
+      {...props}
+    >
+      {children}
+    </div>
   );
-}
+};
 
-function TabsTrigger({
-  className,
-  ...props
-}) {
+const TabsTrigger = ({ value, className, children, ...props }) => {
+  const { selectedValue, onValueChange, registerTrigger, unregisterTrigger } = useContext(TabsContext);
+  const triggerRef = useRef(null);
+  const isSelected = selectedValue === value;
+  const tabId = `tab-${value}`;
+  const panelId = `tabpanel-${value}`;
+
+  React.useEffect(() => {
+    registerTrigger(value, triggerRef);
+    return () => unregisterTrigger(value);
+  }, [value, registerTrigger, unregisterTrigger]);
+
   return (
-    <TabsPrimitive.Trigger
-      data-slot="tabs-trigger"
+    <button
+      ref={triggerRef}
+      type="button"
+      role="tab"
+      id={tabId}
+      aria-selected={isSelected}
+      aria-controls={panelId}
+      data-tab-value={value}
+      tabIndex={isSelected ? 0 : -1}
       className={cn(
-        "data-[state=active]:bg-background dark:data-[state=active]:text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outline-ring dark:data-[state=active]:border-input dark:data-[state=active]:bg-input/30 text-foreground dark:text-muted-foreground inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-2 py-1 text-sm font-medium whitespace-nowrap transition-[color,box-shadow] focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:shadow-sm [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        'inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50',
+        isSelected
+          ? 'bg-background text-foreground shadow-sm'
+          : 'hover:bg-background/50',
         className
       )}
-      {...props} />
+      onClick={() => onValueChange(value)}
+      {...props}
+    >
+      {children}
+    </button>
   );
-}
+};
 
-function TabsContent({
-  className,
-  ...props
-}) {
+const TabsContent = ({ value, className, children, ...props }) => {
+  const { selectedValue } = useContext(TabsContext);
+  const isSelected = selectedValue === value;
+  const tabId = `tab-${value}`;
+  const panelId = `tabpanel-${value}`;
+
+  if (!isSelected) {
+    return null;
+  }
+
   return (
-    <TabsPrimitive.Content
-      data-slot="tabs-content"
-      className={cn("flex-1 outline-none", className)}
-      {...props} />
+    <div
+      role="tabpanel"
+      id={panelId}
+      aria-labelledby={tabId}
+      className={cn(
+        'mt-2 ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        className
+      )}
+      {...props}
+    >
+      {children}
+    </div>
   );
-}
+};
 
-export { Tabs, TabsList, TabsTrigger, TabsContent }
+export { Tabs, TabsList, TabsTrigger, TabsContent };

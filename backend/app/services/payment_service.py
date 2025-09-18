@@ -41,7 +41,11 @@ class PaymentService:
                 user_id=order_data.get('user_id'),
                 customer_email=order_data['customer_email'],
                 customer_name=order_data['customer_name'],
-                payment_provider='stripe'
+                payment_provider='stripe',
+                order_metadata={
+                    'plan_id': order_data.get('plan_id'),
+                    'created_from': 'subscription_selection'
+                }
             )
             
             # Add order items

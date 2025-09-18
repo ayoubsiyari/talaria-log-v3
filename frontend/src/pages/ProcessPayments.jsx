@@ -51,7 +51,7 @@ const ProcessPayments = () => {
   const fetchPayments = async () => {
     try {
       setLoading(true);
-      const token = localStorage.getItem('accessToken');
+      const token = localStorage.getItem('access_token');
       const params = new URLSearchParams({
         page: currentPage,
         per_page: 20,
@@ -82,7 +82,7 @@ const ProcessPayments = () => {
 
   const fetchStats = async () => {
     try {
-      const token = localStorage.getItem('accessToken');
+      const token = localStorage.getItem('access_token');
       const response = await fetch(`${API_BASE_URL}/payments/stats`, {
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -126,7 +126,7 @@ const ProcessPayments = () => {
 
   const handleApprovePayment = async (paymentId) => {
     try {
-      const token = localStorage.getItem('accessToken');
+      const token = localStorage.getItem('access_token');
       const response = await fetch(`${API_BASE_URL}/payments/orders/${paymentId}/approve`, {
         method: 'POST',
         headers: {
@@ -150,7 +150,7 @@ const ProcessPayments = () => {
 
   const handleRejectPayment = async (paymentId) => {
     try {
-      const token = localStorage.getItem('accessToken');
+      const token = localStorage.getItem('access_token');
       const response = await fetch(`${API_BASE_URL}/payments/orders/${paymentId}/reject`, {
         method: 'POST',
         headers: {
@@ -174,7 +174,7 @@ const ProcessPayments = () => {
 
   const handleRefundPayment = async (paymentId) => {
     try {
-      const token = localStorage.getItem('accessToken');
+      const token = localStorage.getItem('access_token');
       const response = await fetch(`${API_BASE_URL}/payments/orders/${paymentId}/refund`, {
         method: 'POST',
         headers: {
@@ -203,7 +203,7 @@ const ProcessPayments = () => {
     }
 
     try {
-      const token = localStorage.getItem('accessToken');
+      const token = localStorage.getItem('access_token');
       const response = await fetch(`${API_BASE_URL}/payments/bulk-action`, {
         method: 'POST',
         headers: {

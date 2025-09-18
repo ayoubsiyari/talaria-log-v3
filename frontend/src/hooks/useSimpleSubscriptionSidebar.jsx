@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { API_BASE_URL } from '@/config/config';
-import { getAuthToken } from '@/utils/tokenUtils';
+import { getAuthToken, hasAuthToken } from '@/utils/tokenUtils';
 
 /**
  * Simple, reliable hook for subscription sidebar components
@@ -13,6 +13,46 @@ export const useSimpleSubscriptionSidebar = () => {
   const [lastFetch, setLastFetch] = useState(null);
   const [planName, setPlanName] = useState(null);
   const [subscriptionLevel, setSubscriptionLevel] = useState(null);
+  const [isFetching, setIsFetching] = useState(false);
+  const [hasToken, setHasToken] = useState(false);
+  const isFetchingRef = useRef(false);
+  
+  // Track token availability
+  useEffect(() => {
+    const checkToken = () => {
+      const tokenExists = hasAuthToken();
+      setHasToken(tokenExists);
+      if (import.meta.env.MODE === 'development') {
+        console.log('🔍 Token availability changed:', tokenExists);
+      }
+    };
+    
+    // Check initial token state
+    checkToken();
+    
+    // Listen for token changes in localStorage
+    const handleStorageChange = (e) => {
+      if (e.key === 'access_token') {
+        checkToken();
+      }
+    };
+    
+    window.addEventListener('storage', handleStorageChange);
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, []);
+
+  // Debug sidebar components changes (development only)
+  useEffect(() => {
+    if (import.meta.env.MODE === 'development') {
+      console.log('🔍 Sidebar components count:', sidebarComponents.length);
+      console.log('🔍 Loading state:', loading);
+      console.log('🔍 Error state:', error);
+      console.log('🔍 Has token:', hasToken);
+    }
+  }, [sidebarComponents, loading, error, hasToken]);
   
   // Default components that are always available (Basic plan components)
   const defaultComponents = [
@@ -57,14 +97,29 @@ export const useSimpleSubscriptionSidebar = () => {
    * Fetch user's available sidebar components from the API
    */
   const fetchSidebarComponents = useCallback(async () => {
-    console.log('🔄 useSimpleSubscriptionSidebar - Fetching components...');
+    if (import.meta.env.MODE === 'development') {
+      console.log('🔄 Fetching sidebar components...');
+    }
+    
+    // Prevent multiple simultaneous fetches
+    if (isFetchingRef.current) {
+      if (import.meta.env.MODE === 'development') {
+        console.log('⚠️ Already fetching, skipping...');
+      }
+      return;
+    }
+    
+    isFetchingRef.current = true;
+    setIsFetching(true);
     
     try {
       setError(null);
       const token = getAuthToken();
       
       if (!token) {
-        console.log('⚠️ No token, using default components');
+        if (import.meta.env.MODE === 'development') {
+          console.log('⚠️ No token, using default components');
+        }
         setSidebarComponents(defaultComponents);
         setLoading(false);
         return;
@@ -80,21 +135,27 @@ export const useSimpleSubscriptionSidebar = () => {
 
       if (response.ok) {
         const data = await response.json();
-        console.log('✅ API Response:', data);
+        
+        if (import.meta.env.MODE === 'development') {
+          console.log('✅ API components count:', data.components?.length || 0);
+        }
         
         // Extract plan information
         setPlanName(data.plan_name || 'Basic');
         setSubscriptionLevel(data.subscription_level || 'basic');
         
         if (data.components && data.components.length > 0) {
-          console.log('✅ Using API components:', data.components.map(c => c.id));
           setSidebarComponents(data.components);
         } else {
-          console.log('⚠️ No components from API, using defaults');
+          if (import.meta.env.MODE === 'development') {
+            console.log('⚠️ No components from API, using defaults');
+          }
           setSidebarComponents(defaultComponents);
         }
       } else {
-        console.log('⚠️ API error, using default components');
+        if (import.meta.env.MODE === 'development') {
+          console.log('⚠️ API error, using default components');
+        }
         setSidebarComponents(defaultComponents);
         setPlanName('Basic');
         setSubscriptionLevel('basic');
@@ -110,6 +171,9 @@ export const useSimpleSubscriptionSidebar = () => {
       setPlanName('Basic');
       setSubscriptionLevel('basic');
       setLoading(false);
+    } finally {
+      isFetchingRef.current = false;
+      setIsFetching(false);
     }
   }, []);
 
@@ -117,32 +181,94 @@ export const useSimpleSubscriptionSidebar = () => {
    * Refresh components (for real-time updates)
    */
   const refreshComponents = useCallback(() => {
-    console.log('🔄 Refreshing components...');
+    if (import.meta.env.MODE === 'development') {
+      console.log('🔄 Manual refresh triggered...');
+    }
+    fetchSidebarComponents();
+  }, [fetchSidebarComponents]);
+  
+  /**
+   * Force refresh components (for immediate updates)
+   */
+  const forceRefreshComponents = useCallback(() => {
+    if (import.meta.env.MODE === 'development') {
+      console.log('🔄 Force refresh triggered...');
+    }
+    setLoading(true);
     fetchSidebarComponents();
   }, [fetchSidebarComponents]);
 
-  // Initial fetch
+  /**
+   * Manual refresh function (can be called from parent components)
+   */
+  const manualRefresh = useCallback(() => {
+    if (import.meta.env.MODE === 'development') {
+      console.log('🔄 Manual refresh called from parent component...');
+    }
+    forceRefreshComponents();
+  }, [forceRefreshComponents]);
+
+  // Initial fetch - only when token is available
   useEffect(() => {
-    // Always use default components for now to fix sidebar
-    console.log('🔧 Using default components to fix sidebar');
-    setSidebarComponents(defaultComponents);
-    setPlanName('Basic');
-    setSubscriptionLevel('basic');
-    setLoading(false);
-    setLastFetch(Date.now());
+    if (import.meta.env.MODE === 'development') {
+      console.log('🔄 Starting sidebar component fetch...', 'hasToken:', hasToken);
+    }
     
-    // Try to fetch from API but don't wait for it
-    fetchSidebarComponents();
-  }, [fetchSidebarComponents]);
-
-  // Set up periodic refresh every 10 seconds for real-time updates
-  useEffect(() => {
-    const interval = setInterval(() => {
-      console.log('🔄 Periodic refresh...');
+    // Only fetch if we have a token, otherwise use default components
+    if (hasToken) {
       fetchSidebarComponents();
-    }, 10000); // Check every 10 seconds
+    } else {
+      // No token available, use default components immediately
+      if (import.meta.env.MODE === 'development') {
+        console.log('⚠️ No token available, using default components');
+      }
+      setSidebarComponents(defaultComponents);
+      setLoading(false);
+    }
+  }, [hasToken, fetchSidebarComponents]);
 
-    return () => clearInterval(interval);
+
+  // Listen for token changes and refresh components
+  useEffect(() => {
+    const handleStorageChange = (e) => {
+      if (e.key === 'access_token') {
+        if (import.meta.env.MODE === 'development') {
+          console.log('🔄 Token updated, refreshing sidebar components...');
+        }
+        // Token state change will trigger the main fetch effect above
+        // No need for setTimeout or direct fetch call here
+      }
+    };
+    
+    window.addEventListener('storage', handleStorageChange);
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, []);
+
+  // Removed experimental force-refresh and focus/hashchange handlers — initial fetch is sufficient; VCS retains history
+
+  // DISABLED: Real-time updates to prevent sidebar resets
+  // Set up periodic refresh only
+  useEffect(() => {
+    let updateInterval;
+    
+    if (import.meta.env.MODE === 'development') {
+      console.log('🔄 Real-time updates completely disabled to prevent sidebar resets');
+    }
+    
+    // Less frequent refresh to prevent sidebar resets (every 2 minutes)
+    updateInterval = setInterval(() => {
+      if (import.meta.env.MODE === 'development') {
+        console.log('🔄 Periodic refresh to check for subscription changes...');
+      }
+      fetchSidebarComponents();
+    }, 120000); // 2 minutes
+    
+    return () => {
+      if (updateInterval) clearInterval(updateInterval);
+    };
   }, [fetchSidebarComponents]);
 
   /**
@@ -167,6 +293,8 @@ export const useSimpleSubscriptionSidebar = () => {
     loading,
     error,
     refreshComponents,
+    forceRefreshComponents,
+    manualRefresh,
     getGroupedComponents,
     lastFetch,
     planName,

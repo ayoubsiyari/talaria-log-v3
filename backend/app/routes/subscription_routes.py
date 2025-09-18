@@ -220,21 +220,15 @@ def update_subscription_plan(plan_id):
         
         db.session.commit()
         
-        # Broadcast real-time update to all users on this plan
-        try:
-            realtime_service.broadcast_plan_update(
-                plan_id=plan_id,
-                update_type='sidebar_components_updated',
-                data={
-                    'plan_name': plan.name,
-                    'sidebar_components': plan.sidebar_components,
-                    'updated_by': user_id,
-                    'updated_at': plan.updated_at.isoformat()
-                }
-            )
-            current_app.logger.info(f"Broadcasted sidebar update for plan {plan_id} to {len(realtime_service.get_plan_subscribers(plan_id))} users")
-        except Exception as e:
-            current_app.logger.error(f"Failed to broadcast plan update: {str(e)}")
+        # DISABLED: Real-time broadcasts for plan updates to prevent sidebar resets
+        # The frontend will refresh periodically and on user actions instead
+        current_app.logger.info(f"Plan {plan_id} updated successfully. Real-time broadcast disabled to prevent sidebar resets.")
+        
+        # Only broadcast for very specific critical changes that absolutely require immediate notification
+        # For now, we'll skip all broadcasts to prevent sidebar issues
+        # if 'is_active' in data and not data['is_active']:
+        #     # Only broadcast if plan is being deactivated
+        #     pass
         
         return jsonify(plan.to_dict()), 200
     except Exception as e:
@@ -244,7 +238,7 @@ def update_subscription_plan(plan_id):
 @subscription_bp.route('/plans/<int:plan_id>', methods=['DELETE'])
 @jwt_required()
 def delete_subscription_plan(plan_id):
-    """Delete a subscription plan (admin only)"""
+    """Soft delete a subscription plan (mark as inactive) - admin only"""
     try:
         # Check if user is admin
         user_id = get_jwt_identity()
@@ -281,13 +275,21 @@ def delete_subscription_plan(plan_id):
             status=SubscriptionStatus.ACTIVE
         ).count()
         
-        if active_subscriptions > 0:
-            return jsonify({'error': f'Cannot delete plan with {active_subscriptions} active subscriptions'}), 400
+        # Soft delete: Mark plan as inactive instead of actually deleting
+        plan.is_active = False
+        plan.visible_to_regular_users = False  # Hide from subscription selector
+        plan.updated_at = datetime.utcnow()
         
-        db.session.delete(plan)
         db.session.commit()
         
-        return jsonify({'message': 'Plan deleted successfully'}), 200
+        # Log the soft delete action
+        current_app.logger.info(f"Plan {plan.name} (ID: {plan_id}) soft deleted by user {user_id}. Active subscriptions: {active_subscriptions}")
+        
+        return jsonify({
+            'message': f'Plan "{plan.name}" has been deactivated successfully. It will no longer appear in the subscription selector for new users.',
+            'active_subscriptions': active_subscriptions,
+            'plan_name': plan.name
+        }), 200
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
@@ -450,8 +452,10 @@ def stripe_subscription_webhook():
                 payload, sig_header, subscription_service.stripe_config['webhook_secret']
             )
         except ValueError as e:
+            current_app.logger.error(f"Invalid payload: {e}")
             return jsonify({'error': 'Invalid payload'}), 400
         except stripe.error.SignatureVerificationError as e:
+            current_app.logger.error(f"Invalid signature: {e}")
             return jsonify({'error': 'Invalid signature'}), 400
         
         # Handle the event
@@ -496,7 +500,7 @@ def create_test_plans():
                 'name': 'Basic',
                 'description': 'Perfect for small teams',
                 'price': 29.99,
-                'billing_cycle': 'monthly',
+                'billing_cycle': 'MONTHLY',
                 'features': ['Up to 5 users', 'Basic analytics', 'Email support'],
                 'max_users': 5,
                 'max_projects': 10,
@@ -510,7 +514,7 @@ def create_test_plans():
                 'name': 'Professional',
                 'description': 'Great for growing businesses',
                 'price': 99.99,
-                'billing_cycle': 'monthly',
+                'billing_cycle': 'MONTHLY',
                 'features': ['Up to 25 users', 'Advanced analytics', 'Priority support', 'API access'],
                 'max_users': 25,
                 'max_projects': 50,
@@ -524,7 +528,7 @@ def create_test_plans():
                 'name': 'Enterprise',
                 'description': 'For large organizations',
                 'price': 299.99,
-                'billing_cycle': 'monthly',
+                'billing_cycle': 'MONTHLY',
                 'features': ['Unlimited users', 'Custom analytics', '24/7 support', 'Custom integrations'],
                 'max_users': None,  # Unlimited
                 'max_projects': None,  # Unlimited
@@ -986,17 +990,26 @@ def get_user_sidebar_components():
         }
         
         # Determine user's subscription level
-        if not user_subscription or not user_subscription.is_active:
-            # No active subscription - show basic components only
-            subscription_level = 'basic'
-            plan_name = 'Basic (No Subscription)'
-        else:
-            # Get plan name and map to subscription level
-            plan_name = user_subscription.plan.name.lower() if user_subscription.plan else 'basic'
+        if not user_subscription or user_subscription.status != SubscriptionStatus.ACTIVE:
+            # No active subscription - check if user has any subscription at all
+            user_subscription = UserSubscription.query.filter_by(user_id=user_id).first()
             
-            if 'enterprise' in plan_name:
+            if user_subscription and user_subscription.plan:
+                # User has a subscription but it's not active - still show plan components
+                plan_name = user_subscription.plan.name
+                subscription_level = 'inactive'
+            else:
+                # User has no subscription at all
+                subscription_level = 'none'
+                plan_name = 'No Subscription'
+        else:
+            # User has an active subscription
+            plan_name = user_subscription.plan.name if user_subscription.plan else 'Basic'
+            plan_name_lower = plan_name.lower()
+            
+            if 'enterprise' in plan_name_lower:
                 subscription_level = 'enterprise'
-            elif 'premium' in plan_name or 'pro' in plan_name:
+            elif 'premium' in plan_name_lower or 'pro' in plan_name_lower:
                 subscription_level = 'premium'
             else:
                 subscription_level = 'basic'
@@ -1086,39 +1099,118 @@ def get_user_sidebar_components():
                 'group': 'Support',
                 'description': 'Get help and support',
                 'required': True
+            },
+            'new-page': {
+                'id': 'new-page',
+                'label': 'New Page',
+                'group': 'Trading',
+                'description': 'Your new page description',
+                'required': False
             }
         }
         
         # Determine subscription level and components based on user's subscription
-        if user_subscription and user_subscription.plan and user_subscription.is_active:
+        if user_subscription and user_subscription.plan and user_subscription.status.value == SubscriptionStatus.ACTIVE.value:
             # User has an active subscription
             plan_name = user_subscription.plan.name
-            subscription_level = 'active'
+            plan_name_lower = plan_name.lower()
             
-            # Use the plan's actual sidebar_components
-            plan_components = user_subscription.plan.sidebar_components or []
+            # Determine subscription level based on plan name
+            if 'enterprise' in plan_name_lower:
+                subscription_level = 'enterprise'
+            elif 'premium' in plan_name_lower or 'pro' in plan_name_lower:
+                subscription_level = 'premium'
+            else:
+                subscription_level = 'basic'
             
-            # Convert plan's sidebar_components to full component objects
+            # Always start with basic components that every user should have
+            basic_component_ids = ['dashboard', 'subscription', 'profile', 'help-support']
             user_components = []
-            for component_id in plan_components:
+            
+            # Add basic components first
+            for component_id in basic_component_ids:
                 if component_id in component_map:
                     user_components.append(component_map[component_id])
             
-            # If no components found in plan, fall back to basic
-            if not user_components:
-                plan_name_lower = plan_name.lower()
-                if 'enterprise' in plan_name_lower:
-                    subscription_level = 'enterprise'
-                elif 'premium' in plan_name_lower or 'pro' in plan_name_lower:
-                    subscription_level = 'premium'
-                else:
-                    subscription_level = 'basic'
-                user_components = all_components.get(subscription_level, all_components['basic'])
+            # Add plan-specific components from the plan's sidebar_components
+            plan_components = user_subscription.plan.sidebar_components or []
+            for component_id in plan_components:
+                if component_id in component_map and component_id not in basic_component_ids:
+                    user_components.append(component_map[component_id])
+            
+            # If no plan components found, add appropriate components based on subscription level
+            if not plan_components:
+                if subscription_level == 'enterprise':
+                    # Add enterprise-specific components
+                    enterprise_components = ['journal', 'analytics', 'advanced-analytics', 'chart', 'portfolio', 'api-access', 'priority-support']
+                    for component_id in enterprise_components:
+                        if component_id in component_map:
+                            user_components.append(component_map[component_id])
+                elif subscription_level == 'premium':
+                    # Add premium-specific components
+                    premium_components = ['journal', 'analytics', 'chart', 'portfolio']
+                    for component_id in premium_components:
+                        if component_id in component_map:
+                            user_components.append(component_map[component_id])
+                else:  # basic
+                    # Add basic trading components
+                    basic_trading_components = ['journal']
+                    for component_id in basic_trading_components:
+                        if component_id in component_map:
+                            user_components.append(component_map[component_id])
         else:
-            # User has no active subscription - use 'none' level
-            subscription_level = 'none'
-            plan_name = 'No Subscription'
-            user_components = all_components['none']
+            # User has no active subscription - check if they have any subscription at all
+            user_subscription = UserSubscription.query.filter_by(user_id=user_id).first()
+            
+            if user_subscription and user_subscription.plan:
+                # User has a subscription but it's not active - still show plan components
+                plan_name = user_subscription.plan.name
+                subscription_level = 'inactive'
+                
+                # Always start with basic components that every user should have
+                basic_component_ids = ['dashboard', 'subscription', 'profile', 'help-support']
+                user_components = []
+                
+                # Add basic components first
+                for component_id in basic_component_ids:
+                    if component_id in component_map:
+                        user_components.append(component_map[component_id])
+                
+                # Add plan-specific components from the plan's sidebar_components
+                plan_components = user_subscription.plan.sidebar_components or []
+                for component_id in plan_components:
+                    if component_id in component_map and component_id not in basic_component_ids:
+                        user_components.append(component_map[component_id])
+                
+                # If no plan components found, determine level by plan name and add appropriate components
+                if not plan_components:
+                    plan_name_lower = plan_name.lower()
+                    if 'enterprise' in plan_name_lower:
+                        subscription_level = 'enterprise'
+                        # Add enterprise-specific components
+                        enterprise_components = ['journal', 'analytics', 'advanced-analytics', 'chart', 'portfolio', 'api-access', 'priority-support']
+                        for component_id in enterprise_components:
+                            if component_id in component_map:
+                                user_components.append(component_map[component_id])
+                    elif 'premium' in plan_name_lower or 'pro' in plan_name_lower:
+                        subscription_level = 'premium'
+                        # Add premium-specific components
+                        premium_components = ['journal', 'analytics', 'chart', 'portfolio']
+                        for component_id in premium_components:
+                            if component_id in component_map:
+                                user_components.append(component_map[component_id])
+                    else:
+                        subscription_level = 'basic'
+                        # Add basic trading components
+                        basic_trading_components = ['journal']
+                        for component_id in basic_trading_components:
+                            if component_id in component_map:
+                                user_components.append(component_map[component_id])
+            else:
+                # User has no subscription at all - use 'none' level
+                subscription_level = 'none'
+                plan_name = 'No Subscription'
+                user_components = all_components['none']
         
         return jsonify({
             'components': user_components,
@@ -1148,7 +1240,7 @@ def check_component_availability(component_id):
         }
         
         # Determine user's subscription level
-        if not user_subscription or not user_subscription.is_active:
+        if not user_subscription or user_subscription.status != SubscriptionStatus.ACTIVE:
             subscription_level = 'none'
         else:
             plan_name = user_subscription.plan.name.lower() if user_subscription.plan else 'basic'
@@ -1159,6 +1251,14 @@ def check_component_availability(component_id):
                 subscription_level = 'premium'
             else:
                 subscription_level = 'basic'
+            
+            # Always include basic components for active subscribers
+            if subscription_level != 'none':
+                # Add basic components to the available components
+                basic_components = ['dashboard', 'subscription', 'profile', 'help-support']
+                for basic_comp in basic_components:
+                    if basic_comp not in component_availability[subscription_level]:
+                        component_availability[subscription_level].append(basic_comp)
         
         # Check if component is available
         available_components = component_availability.get(subscription_level, component_availability['none'])

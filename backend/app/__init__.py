@@ -8,6 +8,7 @@ from flask_mail import Mail
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_cors import CORS
+from flask_socketio import SocketIO
 from celery import Celery
 from config import config
 
@@ -16,6 +17,7 @@ migrate = Migrate()
 jwt = JWTManager()
 bcrypt = Bcrypt()
 mail = Mail()
+socketio = SocketIO()
 # limiter = Limiter(key_func=get_remote_address)
 # celery = Celery(__name__)
 
@@ -42,12 +44,27 @@ def create_app(config_name='default'):
     # Import models here to prevent circular dependencies
     from . import models
 
-    # Get CORS origins from environment or use defaults
-    cors_origins = os.environ.get('CORS_ORIGINS', '').split(',') if os.environ.get('CORS_ORIGINS') else [
-        "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", 
-        "http://localhost:5176", "http://localhost:3000", "http://127.0.0.1:5173", 
-        "http://127.0.0.1:5175", "http://127.0.0.1:5173", "http://31.97.192.82:8081"
-    ]
+    # Get CORS origins based on environment
+    if config_name == 'production':
+        # Production: Only allow HTTPS domains, no IP addresses
+        cors_origins = os.environ.get('CORS_ORIGINS', '').split(',') if os.environ.get('CORS_ORIGINS') else [
+            # Add your production domain here - example:
+            # "https://yourdomain.com", "https://www.yourdomain.com"
+        ]
+        # Ensure all production origins use HTTPS
+        cors_origins = [origin for origin in cors_origins if origin.startswith('https://')]
+    else:
+        # Development: Allow localhost and local IPs for development
+        cors_origins = os.environ.get('CORS_ORIGINS', '').split(',') if os.environ.get('CORS_ORIGINS') else [
+            "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", 
+            "http://localhost:5176", "http://localhost:3000", "http://127.0.0.1:5173",
+            "http://localhost:8080", "http://localhost:8081", "http://127.0.0.1:3000",
+            "http://127.0.0.1:8080", "http://127.0.0.1:8081"
+        ]
+    
+    # Use the same origins as configured for CORS
+    socketio.init_app(app, cors_allowed_origins=cors_origins)
+    print(f"SocketIO initialized: {socketio is not None}")
     
     CORS(app, resources={
         r"/api/*": {
@@ -61,9 +78,13 @@ def create_app(config_name='default'):
     # celery.conf.update(app.config)
 
     from .middleware.rbac_middleware import RBACMiddleware
+    from .middleware.security_headers_middleware import security_headers_middleware
+    
     RBACMiddleware(app)
+    security_headers_middleware.init_app(app)
 
     from .routes.auth_simple import auth_simple_bp as auth_bp
+    from .routes.auth_cookie import auth_cookie_bp
     from .routes.user import user_bp
     from .routes.admin import admin_bp
     from .routes.journal import journal_bp
@@ -86,6 +107,7 @@ def create_app(config_name='default'):
     from .routes.protected_content import protected_bp
 
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
+    app.register_blueprint(auth_cookie_bp)  # Cookie-based auth routes
     app.register_blueprint(promotions_bp, url_prefix='/api/admin/promotions')
     app.register_blueprint(user_bp, url_prefix='/api/users')
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
@@ -115,17 +137,16 @@ def create_app(config_name='default'):
     @app.route('/api/<path:path>', methods=['OPTIONS'])
     def handle_options(path):
         response = app.make_default_options_response()
-        # Allow multiple origins
+        # Use the same CORS origins as configured above
         origin = request.headers.get('Origin')
-        allowed_origins = [
-            'http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175', 
-            'http://localhost:5176', 'http://localhost:3000',
-            'http://127.0.0.1:5173', 'http://127.0.0.1:5175'
-        ]
-        if origin in allowed_origins:
+        if origin in cors_origins:
             response.headers['Access-Control-Allow-Origin'] = origin
+        else:
+            # For development, allow localhost origins
+            if origin and ('localhost' in origin or '127.0.0.1' in origin):
+                response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With, X-CSRF-Token, X-Client-Version, X-Client-Timestamp'
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         return response
 
@@ -137,5 +158,16 @@ def create_app(config_name='default'):
     @app.errorhandler(500)
     def internal_error(error):
         return {'error': 'Internal server error'}, 500
+    
+    # Initialize real-time chat service
+    try:
+        from .services.realtime_chat_service import initialize_realtime_chat_service
+        print(f"Passing SocketIO to chat service: {socketio is not None} (type: {type(socketio).__name__})")
+        initialize_realtime_chat_service(socketio)
+        print("✅ Real-time chat service initialized")
+    except Exception as e:
+        print(f"⚠️ Warning: Could not initialize real-time chat service: {e}")
+        import traceback
+        traceback.print_exc()
     
     return app

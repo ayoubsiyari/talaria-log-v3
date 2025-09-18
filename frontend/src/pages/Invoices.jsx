@@ -50,6 +50,7 @@ const Invoices = () => {
   const fetchOrders = async () => {
     try {
       setLoading(true);
+      const token = localStorage.getItem('access_token');
       const params = new URLSearchParams({
         page: currentPage,
         per_page: 20,
@@ -58,15 +59,20 @@ const Invoices = () => {
 
       const response = await fetch(`${API_BASE_URL}/payments/orders?${params}`, {
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         }
       });
 
       if (response.ok) {
         const data = await response.json();
+        console.log('Orders data:', data);
         setOrders(data.orders || []);
         setTotalPages(data.pages || 1);
       } else {
+        console.error('Failed to fetch orders:', response.status, response.statusText);
+        const errorData = await response.json().catch(() => ({}));
+        console.error('Error details:', errorData);
         toast.error('Failed to fetch orders');
       }
     } catch (error) {
@@ -79,9 +85,11 @@ const Invoices = () => {
 
   const fetchInvoices = async () => {
     try {
+      const token = localStorage.getItem('access_token');
       const response = await fetch(`${API_BASE_URL}/payments/invoices`, {
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         }
       });
 
@@ -96,15 +104,22 @@ const Invoices = () => {
 
   const fetchInvoiceStats = async () => {
     try {
+      const token = localStorage.getItem('access_token');
       const response = await fetch(`${API_BASE_URL}/payments/invoice-stats`, {
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         }
       });
 
       if (response.ok) {
         const data = await response.json();
+        console.log('Invoice stats data:', data);
         setInvoiceStats(data);
+      } else {
+        console.error('Failed to fetch invoice stats:', response.status, response.statusText);
+        const errorData = await response.json().catch(() => ({}));
+        console.error('Error details:', errorData);
       }
     } catch (error) {
       console.error('Error fetching invoice stats:', error);
@@ -113,10 +128,12 @@ const Invoices = () => {
 
   const handleCreateInvoice = async (orderId) => {
     try {
+      const token = localStorage.getItem('access_token');
       const response = await fetch(`${API_BASE_URL}/payments/invoices`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ order_id: orderId })
       });

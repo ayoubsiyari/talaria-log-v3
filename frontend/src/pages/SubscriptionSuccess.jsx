@@ -314,7 +314,7 @@ const SubscriptionSuccess = () => {
       <Card className="w-full max-w-lg">
         <CardHeader className="text-center">
           <div className="mx-auto mb-4">
-            <CheckCircle className="h-16 w-16 text-green-500" />
+            <CheckCircle className="h-16 w-16 text-green-500 animate-pulse" />
           </div>
           <CardTitle className="text-2xl font-bold text-gray-900">
             Subscription Successful!
@@ -400,7 +400,7 @@ const SubscriptionSuccess = () => {
           <div className="flex gap-3">
             <Button 
               onClick={handleContinue}
-              className="flex-1 bg-purple-600 hover:bg-purple-700"
+              className="flex-1 bg-purple-600 hover:bg-purple-700 shadow-lg hover:shadow-xl transition-all duration-200"
             >
               Continue to Dashboard
               <ArrowRight className="h-4 w-4 ml-2" />

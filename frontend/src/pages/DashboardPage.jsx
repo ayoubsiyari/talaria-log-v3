@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import logger from "../utils/logger";
 import RoleBasedSidebar from "../components/Layout/RoleBasedSidebar";
 import DynamicUserSidebar from "../components/Layout/DynamicUserSidebar";
 import Header from "../components/Layout/Header";
@@ -53,6 +54,7 @@ import Notifications from './Notifications';
 import Payments from './Payments';
 import ProcessPayments from './ProcessPayments';
 import PaymentDisputes from './PaymentDisputes';
+import PaymentDashboard from './PaymentDashboard';
 import Reports from './Reports';
 import RevenueAnalytics from './RevenueAnalytics';
 import Subscription from './Subscription';
@@ -65,9 +67,11 @@ import SupportDashboard from '../components/Support/SupportDashboard';
 import MyAssignedTickets from '../components/Support/MyAssignedTickets';
 import Profile from './Profile';
 import { usePermissions } from '../hooks/usePermissions';
+import { useAuth } from '../hooks/useAuth';
 
 function DashboardPage({ onLogout }) {
   const { hasRole, isSuperAdmin } = usePermissions();
+  const { isAuthenticated } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [activeItem, setActiveItem] = useState('dashboard')
@@ -77,22 +81,27 @@ function DashboardPage({ onLogout }) {
     const storedUser = localStorage.getItem('user');
     const parsedUser = storedUser ? JSON.parse(storedUser) : null;
     
-    console.log('getUserType - storedUser:', parsedUser)
-    console.log('getUserType - is_admin:', parsedUser?.is_admin)
-    
     // Simple user type detection - only check is_admin field
     // Regular users have is_admin: false or undefined
     if (parsedUser?.is_admin === true) {
-      console.log('getUserType - returning admin')
       return 'admin';
     }
     
-    console.log('getUserType - returning regular')
     return 'regular';
   };
   
+  // 🚀 PERFORMANCE: Memoized user data
+  const userData = useMemo(() => {
+    try {
+      const storedUser = localStorage.getItem('user');
+      return storedUser ? JSON.parse(storedUser) : null;
+    } catch (error) {
+      logger.error('Failed to parse user data:', error);
+      return null;
+    }
+  }, []);
+
   const userType = getUserType();
-  console.log('DashboardPage - User type:', userType)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [darkMode, setDarkMode] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -113,32 +122,43 @@ function DashboardPage({ onLogout }) {
 
   // 🚀 PERFORMANCE: Memoized route permission validation
   const checkRoutePermission = useCallback((route) => {
+    logger.debug('checkRoutePermission called with route:', route);
+    
     // System Administrator - can access everything
     if (isSuperAdmin() || hasRole('system_administrator')) {
+      logger.debug('System Administrator access granted for:', route);
       return true;
     }
     
     // Finance Team permissions
     if (hasRole('finance_team')) {
-      const financeRoutes = ['view-payment', 'create-invoices', 'generate-financial-reports', 'view-revenue-analytics', 'payments', 'invoices', 'financial-reports', 'revenue-analytics'];
-      return financeRoutes.includes(route);
+      const financeRoutes = ['view-payment', 'create-invoices', 'generate-financial-reports', 'view-revenue-analytics', 'payments', 'invoices', 'financial-reports', 'revenue-analytics', 'process-payments', 'payment-disputes', 'payment-dashboard'];
+      const hasAccess = financeRoutes.includes(route);
+      logger.debug('Finance team check for', route, ':', hasAccess);
+      return hasAccess;
     }
     
     // Marketing Team permissions
     if (hasRole('marketing_team')) {
       const marketingRoutes = ['promotions', 'subscription-management', 'marketing-subscription-management', 'subscription-plan-manager', 'marketing-reports', 'affiliates'];
-      return marketingRoutes.includes(route);
+      const hasAccess = marketingRoutes.includes(route);
+      logger.debug('Marketing team check for', route, ':', hasAccess);
+      return hasAccess;
     }
     
     // Support Team permissions
     if (hasRole('support_team')) {
       const supportRoutes = ['support-user-management', 'support-agent-performance', 'support-dashboard', 'my-assigned-tickets', 'admin-user-management', 'send-notifications', 'support-tickets', 'my-tickets', 'ticket-overview', 'staff-log', 'help-support'];
-      return supportRoutes.includes(route);
+      const hasAccess = supportRoutes.includes(route);
+      logger.debug('Support team check for', route, ':', hasAccess);
+      return hasAccess;
     }
     
     // Regular users - limited access
     const regularUserRoutes = ['dashboard', 'profile', 'settings', 'journal', 'portfolio', 'analytics', 'chart', 'api-access', 'priority-support', 'advanced-analytics', 'my-tickets', 'help-support'];
-    return regularUserRoutes.includes(route);
+    const hasAccess = regularUserRoutes.includes(route);
+    logger.debug('Regular user check for', route, ':', hasAccess);
+    return hasAccess;
   }, [isSuperAdmin, hasRole]);
 
   // 🛡️ SECURITY: Get default active item based on role
@@ -172,13 +192,13 @@ function DashboardPage({ onLogout }) {
   useEffect(() => {
     // Get the current URL path
     const currentPath = location.pathname;
-    console.log('🔍 URL Detection - Current path:', currentPath);
+    logger.debug('URL Detection - Current path:', currentPath);
     
     // Extract the section from URL (e.g., /dashboard/users -> users)
     const pathSections = currentPath.split('/').filter(Boolean);
     const dashboardSection = pathSections[1]; // Get section after /dashboard
     
-    console.log('🔍 URL Detection - Dashboard section:', dashboardSection);
+    logger.debug('URL Detection - Dashboard section:', dashboardSection);
     
     // 🛡️ SECURITY: Validate URL section against allowed routes
     const allowedRoutes = [
@@ -196,13 +216,14 @@ function DashboardPage({ onLogout }) {
       'permissions-overview', 'user-management-permissions', 'rbac-management-permissions',
       'system-admin-permissions', 'content-management-permissions', 'analytics-permissions',
       'subscription-management-permissions', 'communication-permissions', 'security-permissions',
-      'promotions-permissions', 'database-permissions', 'permission-templates'
+      'promotions-permissions', 'database-permissions', 'permission-templates',
+      'process-payments', 'payment-disputes', 'payment-dashboard'
     ];
     
     // 🛡️ SECURITY: Check if URL section is allowed
     if (dashboardSection && dashboardSection !== 'dashboard') {
       if (!allowedRoutes.includes(dashboardSection)) {
-        console.warn('🚨 SECURITY: Invalid route detected:', dashboardSection);
+        logger.warn('Invalid route detected:', dashboardSection);
         // Redirect to dashboard for invalid routes
         navigate('/dashboard', { replace: true });
         setActiveItem('dashboard');
@@ -212,7 +233,7 @@ function DashboardPage({ onLogout }) {
       // 🛡️ SECURITY: Check permissions for the route
       const hasPermission = checkRoutePermission(dashboardSection);
       if (!hasPermission) {
-        console.warn('🚨 SECURITY: Access denied for route:', dashboardSection);
+        logger.warn('Access denied for route:', dashboardSection);
         // Redirect to appropriate default based on role
         const defaultItem = getDefaultActiveItem();
         navigate(`/dashboard/${defaultItem}`, { replace: true });
@@ -220,13 +241,13 @@ function DashboardPage({ onLogout }) {
         return;
       }
       
-      console.log('✅ SECURITY: Route validated and permission granted for:', dashboardSection);
+      logger.debug('Route validated and permission granted for:', dashboardSection);
       setActiveItem(dashboardSection);
       return;
     }
     
     // If no URL section, use your existing default logic
-    console.log('🔍 URL Detection - No URL section, using default logic');
+    logger.debug('URL Detection - No URL section, using default logic');
     const defaultItem = getDefaultActiveItem();
     setActiveItem(defaultItem);
   }, [hasRole, isSuperAdmin, location.pathname, navigate, checkRoutePermission, getDefaultActiveItem]);
@@ -263,7 +284,7 @@ function DashboardPage({ onLogout }) {
         meta.setAttribute('content', header.value);
       });
       
-      console.log('🛡️ SECURITY: Basic security headers set (CSP disabled for API compatibility)');
+      logger.debug('Basic security headers set (CSP disabled for API compatibility)');
     };
     
     setSecurityHeaders();
@@ -309,19 +330,8 @@ function DashboardPage({ onLogout }) {
       canonicalLink.setAttribute('href', canonicalUrl);
     }
     
-    console.log('🚀 SEO: Updated page metadata for:', activeItem);
+    logger.debug('Updated page metadata for:', activeItem);
   }, [activeItem]);
-
-  // 🚀 PERFORMANCE: Memoized user data
-  const userData = useMemo(() => {
-    try {
-      const storedUser = localStorage.getItem('user');
-      return storedUser ? JSON.parse(storedUser) : null;
-    } catch (error) {
-      console.warn('🚨 ERROR: Failed to parse user data:', error);
-      return null;
-    }
-  }, []);
 
   // 🚀 PERFORMANCE: Memoized user info for sidebars
   const userInfo = useMemo(() => ({
@@ -345,10 +355,10 @@ function DashboardPage({ onLogout }) {
     setCsrfToken(token);
     // Store in sessionStorage for security
     sessionStorage.setItem('csrf_token', token);
-    console.log('🛡️ CSRF: Token generated and stored');
+    logger.debug('CSRF token generated and stored');
   }, []);
 
-  // 🛡️ ENTERPRISE SECURITY: Rate Limiting
+  // 🛡️ ENTERPRISE SECURITY: Rate Limiting - Simplified for better performance
   const [navigationAttempts, setNavigationAttempts] = useState({});
   const [isRateLimited, setIsRateLimited] = useState(false);
   
@@ -363,11 +373,11 @@ function DashboardPage({ onLogout }) {
       // Remove attempts older than 1 minute
       const recentAttempts = attempts.filter(time => now - time < 60000);
       
-      // If more than 10 attempts in 1 minute, rate limit
-      if (recentAttempts.length >= 10) {
-        console.warn('🚨 RATE LIMIT: Too many navigation attempts for:', itemId);
+      // If more than 30 attempts in 1 minute, rate limit (increased from 10)
+      if (recentAttempts.length >= 30) {
+        logger.warn('Too many navigation attempts for:', itemId);
         setIsRateLimited(true);
-        setTimeout(() => setIsRateLimited(false), 60000); // Reset after 1 minute
+        setTimeout(() => setIsRateLimited(false), 30000); // Reset after 30 seconds (reduced from 1 minute)
         shouldAllow = false;
         return prev; // Don't update state, just return current state
       }
@@ -389,7 +399,7 @@ function DashboardPage({ onLogout }) {
   
   // 🛡️ ENTERPRISE SECURITY: Handle session timeout
   const handleSessionTimeout = useCallback(() => {
-    console.warn('🚨 SESSION: Session timeout - logging out user');
+    logger.warn('Session timeout - logging out user');
     
     // Clear all stored data
     localStorage.removeItem('access_token');
@@ -412,14 +422,14 @@ function DashboardPage({ onLogout }) {
     const user = localStorage.getItem('user');
     
     if (!token || !user) {
-      console.warn('🚨 SESSION: Invalid session detected');
+      logger.warn('Invalid session detected');
       return false;
     }
     
     // Check if session has timed out due to inactivity
     const now = Date.now();
     if (now - lastActivity > SESSION_TIMEOUT) {
-      console.warn('🚨 SESSION: Session timed out due to inactivity');
+      logger.warn('Session timed out due to inactivity');
       handleSessionTimeout();
       return false;
     }
@@ -428,13 +438,13 @@ function DashboardPage({ onLogout }) {
     try {
       const tokenData = JSON.parse(atob(token.split('.')[1]));
       if (tokenData.exp && tokenData.exp < Date.now() / 1000) {
-        console.warn('🚨 SESSION: Token expired');
+        logger.warn('Token expired');
         handleSessionTimeout();
         return false;
       }
     } catch (error) {
       // If not JWT, just check if token exists
-      console.log('🔍 SESSION: Token validation skipped (not JWT)');
+      logger.debug('Token validation skipped (not JWT)');
     }
     
     return true;
@@ -483,38 +493,30 @@ function DashboardPage({ onLogout }) {
     };
   }, [updateLastActivity, validateSession]);
 
-  // 🛡️ ENTERPRISE SECURITY: Advanced Input Validation
+  // 🛡️ ENTERPRISE SECURITY: Simplified Input Validation for better performance
   const validateInput = useCallback((input) => {
-    // Check for SQL injection patterns
-    const sqlPatterns = [
-      /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC|UNION|SCRIPT)\b)/i,
-      /(\b(OR|AND)\s+\d+\s*=\s*\d+)/i,
-      /(\b(OR|AND)\s+'.*'\s*=\s*'.*')/i,
-      /(\b(OR|AND)\s+".*"\s*=\s*".*")/i
-    ];
-    
-    if (sqlPatterns.some(pattern => pattern.test(input))) {
-      console.warn('🚨 SECURITY: SQL injection attempt detected:', input);
-      return false;
+    // Allow valid route names (like create-invoices, process-payments, etc.)
+    const validRoutePattern = /^[a-zA-Z0-9-_]+$/;
+    if (validRoutePattern.test(input)) {
+      return true;
     }
     
-    // Check for XSS patterns
+    // Basic XSS check only
     const xssPatterns = [
       /<script[^>]*>.*?<\/script>/gi,
-      /<iframe[^>]*>.*?<\/iframe>/gi,
       /javascript:/gi,
       /on\w+\s*=/gi,
       /<img[^>]*src[^>]*>/gi
     ];
     
     if (xssPatterns.some(pattern => pattern.test(input))) {
-      console.warn('🚨 SECURITY: XSS attempt detected:', input);
+      logger.warn('XSS attempt detected:', input);
       return false;
     }
     
     // Check for path traversal
     if (input.includes('..') || input.includes('//') || input.includes('\\')) {
-      console.warn('🚨 SECURITY: Path traversal attempt detected:', input);
+      logger.warn('Path traversal attempt detected:', input);
       return false;
     }
     
@@ -533,8 +535,8 @@ function DashboardPage({ onLogout }) {
       details: details
     };
     
-    // Log to console for development
-    console.log('🛡️ SECURITY EVENT:', securityEvent);
+    // Log security event
+    logger.security(eventType, securityEvent);
     
     // In production, you would send this to your security monitoring service
     // Example: sendToSecurityService(securityEvent);
@@ -551,89 +553,65 @@ function DashboardPage({ onLogout }) {
     localStorage.setItem('security_logs', JSON.stringify(existingLogs));
   }, [userType]);
 
-  // 🛡️ ENTERPRISE SECURITY: Enhanced Secure Navigation
-  const handleItemClick = useCallback((itemId) => {
-    console.log('🔍 Navigation - handleItemClick called with itemId:', itemId)
+  // 🛡️ ENTERPRISE SECURITY: Simplified Navigation for better performance
+  const handleItemClick = useCallback((itemId, path) => {
+    logger.info('handleItemClick called', { itemId, path });
     
-    // 🛡️ ENTERPRISE SECURITY: Session validation
-    if (!validateSession()) {
-      logSecurityEvent('SESSION_INVALID', { itemId, reason: 'Invalid session' });
-      console.warn('🚨 SECURITY: Invalid session, redirecting to login');
+    // Basic validation only
+    if (!itemId || typeof itemId !== 'string') {
+      logger.warn('Invalid itemId provided:', itemId);
+      return;
+    }
+    
+    // Skip heavy security checks for better performance
+    // Only check if user is authenticated
+    if (!isAuthenticated) {
+      logger.warn('User not authenticated, redirecting to login');
       window.location.href = '/login';
       return;
     }
     
-    // 🛡️ ENTERPRISE SECURITY: Rate limiting check
-    if (isRateLimited) {
-      logSecurityEvent('RATE_LIMIT_EXCEEDED', { itemId, reason: 'Rate limit exceeded' });
-      console.warn('🚨 SECURITY: Rate limited, please wait');
-      alert('Too many requests. Please wait a moment before trying again.');
-      return;
-    }
-    
-    if (!checkRateLimit(itemId)) {
-      return;
-    }
-    
-    // 🛡️ ENTERPRISE SECURITY: Advanced input validation
-    if (!validateInput(itemId)) {
-      logSecurityEvent('MALICIOUS_INPUT', { itemId, input: itemId });
-      console.warn('🚨 SECURITY: Malicious input detected:', itemId);
-      alert('Invalid input detected. Access denied.');
-      return;
-    }
-    
-    // 🛡️ SECURITY: Validate itemId before proceeding
-    if (!itemId || typeof itemId !== 'string') {
-      logSecurityEvent('INVALID_INPUT', { itemId, type: typeof itemId });
-      console.warn('🚨 SECURITY: Invalid itemId provided:', itemId);
-      return;
-    }
-    
-    // 🛡️ SECURITY: Check permissions for the route
+    // Basic permission check (simplified)
     const hasPermission = checkRoutePermission(itemId);
     if (!hasPermission) {
-      logSecurityEvent('ACCESS_DENIED', { itemId, userType, reason: 'Insufficient permissions' });
-      console.warn('🚨 SECURITY: Access denied for route:', itemId);
-      // Show user-friendly error message
+      logger.warn('Access denied for route:', itemId);
       alert(`Access denied: You don't have permission to access ${itemId}`);
       return;
     }
     
-    // 🛡️ SECURITY: Sanitize itemId to prevent XSS
-    const sanitizedItemId = itemId.replace(/[^a-zA-Z0-9-_]/g, '');
-    if (sanitizedItemId !== itemId) {
-      logSecurityEvent('XSS_ATTEMPT', { original: itemId, sanitized: sanitizedItemId });
-      console.warn('🚨 SECURITY: Potentially malicious itemId detected:', itemId);
-      return;
-    }
-    
     // Update state
-    setActiveItem(sanitizedItemId);
+    setActiveItem(itemId);
     setMobileMenuOpen(false); // Close mobile menu when item is selected
     
-    // 🛡️ SECURE URL UPDATE with error handling
+    // Use the provided path if available, otherwise fall back to the old logic
     try {
-      // Update URL to reflect the selected item
-      const newUrl = sanitizedItemId === 'dashboard' ? '/dashboard' : `/dashboard/${sanitizedItemId}`;
+      let newUrl;
+      if (path && typeof path === 'string') {
+        // For admin dashboard, always prefix with /dashboard unless it's already the root
+        if (path === '/') {
+          newUrl = '/dashboard';
+        } else if (path.startsWith('/dashboard')) {
+          // Already has dashboard prefix
+          newUrl = path;
+        } else {
+          // Add dashboard prefix for admin routes
+          newUrl = `/dashboard${path}`;
+        }
+        logger.info('Using provided path:', newUrl);
+      } else {
+        // Fallback to old logic for backward compatibility
+        newUrl = itemId === 'dashboard' ? '/dashboard' : `/dashboard/${itemId}`;
+        logger.info('Using fallback path construction:', newUrl);
+      }
+      
       navigate(newUrl, { replace: true });
-      console.log('✅ SECURITY: Navigation successful to:', newUrl);
-      
-      // 🛡️ SECURITY: Log successful navigation
-      logSecurityEvent('NAVIGATION_SUCCESS', {
-        route: sanitizedItemId,
-        url: newUrl,
-        csrfToken: csrfToken ? 'present' : 'missing',
-        sessionValid: validateSession()
-      });
-      
+      logger.info('Navigation successful', { url: newUrl });
     } catch (error) {
-      logSecurityEvent('NAVIGATION_ERROR', { error: error.message, itemId: sanitizedItemId });
-      console.error('🚨 SECURITY: Navigation failed:', error);
+      logger.error('Navigation failed:', error);
       // Fallback: still update the state even if URL update fails
-      console.warn('⚠️ FALLBACK: Using state-only navigation');
+      logger.warn('Using state-only navigation fallback');
     }
-  }, [checkRoutePermission, navigate, userType, validateSession, isRateLimited, checkRateLimit, validateInput, csrfToken, logSecurityEvent]);
+  }, [checkRoutePermission, navigate, isAuthenticated]);
 
   const toggleSidebar = () => {
     setSidebarCollapsed(!sidebarCollapsed)
@@ -649,24 +627,24 @@ function DashboardPage({ onLogout }) {
 
           const handleApplyTemplate = async (template) => {
           try {
-            console.log('Applying template:', template)
+            logger.debug('Applying template:', template.name);
             // The template application is now handled by the PermissionTemplates component
             // which calls the backend API directly
             alert(`Template "${template.name}" applied successfully with ${template.permissions_count} permissions to ${template.roles_applied?.length || 0} roles.`)
           } catch (error) {
-            console.error('Failed to apply template:', error)
+            logger.error('Failed to apply template:', error)
             alert('Failed to apply template. Please try again.')
           }
         }
 
   // 🛡️ SECURE CONTENT RENDERING with error boundaries
   const renderContent = () => {
-    console.log('🔍 Content - renderContent called with activeItem:', activeItem)
-    console.log('🔍 Content - useChartDashboard:', useChartDashboard)
+    logger.debug('renderContent called with activeItem:', activeItem);
+    logger.debug('useChartDashboard:', useChartDashboard);
     
     // 🛡️ SECURITY: Final permission check before rendering
     if (!checkRoutePermission(activeItem)) {
-      console.warn('🚨 SECURITY: Access denied during render for:', activeItem);
+      logger.warn('Access denied during render for:', activeItem);
       return (
         <div className="p-6">
           <div className="bg-red-50 border border-red-200 rounded-lg p-6">
@@ -687,7 +665,7 @@ function DashboardPage({ onLogout }) {
     try {
       return renderContentSafely();
     } catch (error) {
-      console.error('🚨 ERROR: Content rendering failed:', error);
+      logger.error('Content rendering failed:', error);
       return (
         <div className="p-6">
           <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6">
@@ -717,8 +695,8 @@ function DashboardPage({ onLogout }) {
   const renderContentSafely = () => {
     switch (activeItem) {
       case 'dashboard':
-        console.log('DashboardPage - Rendering dashboard component')
-        console.log('DashboardPage - User type:', userType)
+        logger.debug('Rendering dashboard component');
+        logger.debug('User type:', userType);
         
         // For regular users, show a simple dashboard
         if (userType === 'regular') {
@@ -755,7 +733,7 @@ function DashboardPage({ onLogout }) {
             />
           )
         } catch (error) {
-          console.error('DashboardPage - Error rendering dashboard:', error)
+          logger.error('Error rendering dashboard:', error)
           return (
             <div className="p-6">
               <h1 className="text-2xl font-bold mb-4">Dashboard Error</h1>
@@ -788,7 +766,7 @@ function DashboardPage({ onLogout }) {
       case 'promotions':
         return <PromotionsManagement onNavigate={handleItemClick} />
       case 'affiliates':
-        return <Affiliates />;
+        return <Affiliates onNavigate={handleItemClick} />;
       case 'reports':
         return <Reports />;
       case 'subscription':
@@ -801,6 +779,8 @@ function DashboardPage({ onLogout }) {
         return <Invoices />;
       case 'payment-disputes':
         return <PaymentDisputes />;
+      case 'payment-dashboard':
+        return <PaymentDashboard />;
       case 'financial-reports':
         return <FinancialReports />;
       case 'revenue-analytics':
@@ -852,7 +832,8 @@ function DashboardPage({ onLogout }) {
       case 'staff-log':
         return <StaffLog />
       case 'profile':
-        console.log('DashboardPage - Rendering Profile component for profile case')
+        logger.debug('Rendering Profile component for profile case');
+        logger.debug('activeItem is:', activeItem);
         return <Profile />
       case 'settings':
         return <Settings onNavigate={handleItemClick} />
@@ -936,7 +917,7 @@ function DashboardPage({ onLogout }) {
       <div className="hidden md:block">
         {userType === 'regular' ? (
           (() => {
-            console.log('🚀 RENDERING DYNAMIC SIDEBAR FOR REGULAR USER');
+            logger.debug('RENDERING DYNAMIC SIDEBAR FOR REGULAR USER');
             return <DynamicUserSidebar
             activeItem={activeItem}
             onItemClick={handleItemClick}
@@ -950,7 +931,7 @@ function DashboardPage({ onLogout }) {
           })()
         ) : (
           (() => {
-            console.log('⚠️ RENDERING ROLE-BASED SIDEBAR FOR ADMIN USER');
+            logger.debug('RENDERING ROLE-BASED SIDEBAR FOR ADMIN USER');
             return <RoleBasedSidebar
             activeItem={activeItem}
             onItemClick={handleItemClick}
@@ -976,7 +957,7 @@ function DashboardPage({ onLogout }) {
           <div className="absolute left-0 top-0 h-full animate-slide-in-left">
             {userType === 'regular' ? (
               (() => {
-                console.log('🚀 RENDERING DYNAMIC SIDEBAR FOR REGULAR USER (MOBILE)');
+                logger.debug('RENDERING DYNAMIC SIDEBAR FOR REGULAR USER (MOBILE)');
                 return <DynamicUserSidebar
                 activeItem={activeItem}
                 onItemClick={handleItemClick}
@@ -994,7 +975,7 @@ function DashboardPage({ onLogout }) {
               })()
             ) : (
               (() => {
-                console.log('⚠️ RENDERING ROLE-BASED SIDEBAR FOR ADMIN USER (MOBILE)');
+                logger.debug('RENDERING ROLE-BASED SIDEBAR FOR ADMIN USER (MOBILE)');
                 return <RoleBasedSidebar
                 activeItem={activeItem}
                 onItemClick={handleItemClick}
@@ -1029,6 +1010,7 @@ function DashboardPage({ onLogout }) {
         
         <main className="flex-1 overflow-y-auto p-6 min-h-0">
           <Breadcrumb activeItem={activeItem} onItemClick={handleItemClick} />
+          
           {renderContent()}
         </main>
       </div>

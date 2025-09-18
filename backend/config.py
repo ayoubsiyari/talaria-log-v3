@@ -28,6 +28,10 @@ class Config:
     # Rate limiting - disabled for development
     RATELIMIT_DEFAULT = "10000 per day;1000 per hour"
     RATELIMIT_STORAGE_URL = REDIS_URL
+    
+    # Payment security configuration
+    PAYMENT_ENCRYPTION_KEY = os.environ.get('PAYMENT_ENCRYPTION_KEY')
+    TOKENIZATION_KEY = os.environ.get('TOKENIZATION_KEY')
 
 class DevelopmentConfig(Config):
     """Development configuration"""
@@ -54,6 +58,9 @@ class ProductionConfig(Config):
     
     # Rate limiting for production
     RATELIMIT_DEFAULT = "1000 per day;100 per hour"
+    
+    # CORS security for production
+    CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '').split(',') if os.environ.get('CORS_ORIGINS') else []
     
     # Logging
     LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO')

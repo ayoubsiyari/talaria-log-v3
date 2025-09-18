@@ -17,13 +17,13 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { API_BASE_URL, STRIPE_CONFIG } from '@/config/config';
+import { API_BASE_URL, STRIPE_CONFIG, ENV } from '@/config/config';
 import securityService from '../services/securityService';
 import subscriptionService from '../services/subscriptionService';
 import stripeService from '../services/stripeService';
 
-// Real Stripe payment form
-const CheckoutForm = ({ order, paymentIntent, onSuccess, onError }) => {
+// Payment form - shows test button in development, real Stripe form in production
+const CheckoutForm = ({ order, paymentIntent, onSuccess, onError, disabled = false }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [cardNumber, setCardNumber] = useState('');
@@ -41,8 +41,114 @@ const CheckoutForm = ({ order, paymentIntent, onSuccess, onError }) => {
     );
   }
 
-  const handleSubmit = async (event) => {
+  // Test payment handler for development mode
+  const handleTestPayment = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      console.log('🧪 Processing test payment...');
+      console.log('📋 Order data:', order);
+      console.log('💰 Amount:', order.total_amount);
+      console.log('📧 Customer:', order.customer_email);
+      console.log('🏷️ Referral code:', order.promotion_code);
+      
+      // Step 1: Create a real order in the database first (if not already created)
+      let realOrder = order;
+      
+      // Check if this is a mock/fallback order (has a JavaScript timestamp as ID)
+      if (!realOrder.id || realOrder.id > 1000000000000) {
+        console.log('📝 Creating real order in database for test payment...');
+        
+        const orderData = {
+          customer_email: realOrder.customer_email,
+          customer_name: realOrder.customer_name,
+          items: realOrder.items || [
+            {
+              name: 'Premium Subscription',
+              price: realOrder.total_amount || 99.99,
+              quantity: 1,
+              description: 'Test subscription purchase'
+            }
+          ],
+          referral_code: realOrder.promotion_code || null
+        };
+        
+        try {
+          const response = await securityService.createSecurePaymentRequest('/payments/create-order', orderData);
+          
+          if (response.ok) {
+            const data = await response.json();
+            console.log('✅ Real order created for test payment:', data);
+            realOrder = data.order;
+          } else {
+            console.log('⚠️ Failed to create real order, using existing order');
+          }
+        } catch (err) {
+          console.log('⚠️ Error creating real order, using existing order:', err.message);
+        }
+      }
+      
+      // Step 2: Simulate payment processing delay
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      
+      // Step 3: Call payment success to actually activate the subscription
+      console.log('💾 Calling payment success endpoint to activate subscription...');
+      
+      const paymentData = {
+        order_id: realOrder.id,
+        payment_intent_id: `pi_test_${Date.now()}`,
+        customer_email: realOrder.customer_email,
+        referral_code: realOrder.promotion_code || null,
+        final_amount: realOrder.total_amount
+      };
+      
+      console.log('📤 Payment success data:', paymentData);
+      
+      const paymentResponse = await securityService.createSecurePaymentRequest('/payments/payment-success', paymentData);
+      
+      if (paymentResponse.ok) {
+        const result = await paymentResponse.json();
+        console.log('✅ Payment success API response:', result);
+        
+        if (result.subscription_updated || result.user_activated) {
+          toast.success('🎉 Test payment successful! Subscription activated!');
+          console.log('🎉 Subscription activated successfully');
+          
+          // Update the order object for the success handler
+          realOrder = { ...realOrder, ...result.order };
+          
+        } else {
+          toast.warning('🧐 Payment processed but subscription activation may be pending');
+          console.log('⚠️ Payment success but subscription not immediately activated');
+        }
+      } else {
+        const errorData = await paymentResponse.json();
+        console.error('❌ Payment success API failed:', errorData);
+        throw new Error(errorData.error || 'Failed to process payment success');
+      }
+      
+      // Step 4: Call the success handler to update UI
+      console.log('✅ Test payment completed successfully');
+      onSuccess();
+      
+    } catch (err) {
+      console.error('❌ Test payment error:', err);
+      setError('Test payment failed: ' + err.message);
+      toast.error('Test payment failed: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Real Stripe payment handler
+  const handleStripePayment = async (event) => {
     event.preventDefault();
+    
+    if (disabled) {
+      setError('Payment form is disabled. Please wait for the current process to complete.');
+      return;
+    }
     
     if (!cardNumber || !expiryDate || !cvv || !cardName) {
       setError('Please fill in all card details');
@@ -99,9 +205,83 @@ const CheckoutForm = ({ order, paymentIntent, onSuccess, onError }) => {
     }
   };
 
+  // Development mode - Show prominent test button
+  if (ENV.development) {
+    return (
+      <div className="space-y-6">
+        {/* Development Mode Notice */}
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+            <span className="text-sm font-semibold text-blue-800">Development Mode</span>
+          </div>
+          <p className="text-sm text-blue-600">
+            You're in development mode. Click the button below to simulate a successful payment.
+            Real Stripe integration will be enabled in production.
+          </p>
+        </div>
+
+        {/* Test Payment Button */}
+        <Button 
+          type="button"
+          onClick={handleTestPayment}
+          disabled={loading || disabled}
+          className="w-full h-12 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white font-semibold text-lg shadow-lg hover:shadow-xl transition-all duration-300"
+        >
+          {loading ? (
+            <>
+              <Loader2 className="h-5 w-5 mr-3 animate-spin" />
+              Processing Test Payment...
+            </>
+          ) : disabled ? (
+            <>
+              <CheckCircle className="h-5 w-5 mr-3" />
+              Payment Processed
+            </>
+          ) : (
+            <>
+              <CreditCard className="h-5 w-5 mr-3" />
+              🧪 Test Payment - ${(order.total_amount || 0).toFixed(2)}
+            </>
+          )}
+        </Button>
+
+        {error && (
+          <div className="text-red-500 text-sm flex items-center gap-2 bg-red-50 p-3 rounded-lg">
+            <XCircle className="h-4 w-4" />
+            {error}
+          </div>
+        )}
+
+        {/* Show what will be tested */}
+        <div className="bg-gray-50 p-4 rounded-lg space-y-2">
+          <h4 className="font-medium text-gray-900 mb-2">Test Payment Flow:</h4>
+          <div className="text-sm text-gray-600 space-y-1">
+            <div>✅ <strong>Step 1:</strong> Create real order in database</div>
+            <div>✅ <strong>Step 2:</strong> Process test payment (${(order.total_amount || 0).toFixed(2)})</div>
+            <div>✅ <strong>Step 3:</strong> Activate user subscription</div>
+            {order.promotion_code && (
+              <div>✅ <strong>Step 4:</strong> Process affiliate commissions ({order.promotion_code})</div>
+            )}
+            <div>✅ <strong>Step 5:</strong> Update user account status</div>
+          </div>
+          <div className="mt-3 pt-3 border-t border-gray-300">
+            <div className="text-sm text-gray-700">
+              <div><strong>Customer:</strong> {order.customer_email}</div>
+              <div><strong>Order:</strong> {order.order_number}</div>
+              {order.promotion_code && (
+                <div><strong>Referral Code:</strong> {order.promotion_code}</div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Production mode - Show real Stripe form
   return (
-    <>
-    <form onSubmit={handleSubmit} className="space-y-6">
+    <form onSubmit={handleStripePayment} className="space-y-6">
       <div className="space-y-4">
         <div>
           <Label htmlFor="card-name">Cardholder Name</Label>
@@ -125,6 +305,7 @@ const CheckoutForm = ({ order, paymentIntent, onSuccess, onError }) => {
             onChange={(e) => setCardNumber(stripeService.formatCardNumber(e.target.value))}
             maxLength={19}
             required
+            disabled={disabled}
           />
         </div>
         
@@ -145,6 +326,7 @@ const CheckoutForm = ({ order, paymentIntent, onSuccess, onError }) => {
               }}
               maxLength={5}
               required
+              disabled={disabled}
             />
           </div>
           <div>
@@ -157,6 +339,7 @@ const CheckoutForm = ({ order, paymentIntent, onSuccess, onError }) => {
               onChange={(e) => setCvv(e.target.value.replace(/\D/g, ''))}
               maxLength={4}
               required
+              disabled={disabled}
             />
           </div>
         </div>
@@ -171,13 +354,18 @@ const CheckoutForm = ({ order, paymentIntent, onSuccess, onError }) => {
 
       <Button 
         type="submit" 
-        disabled={loading} 
+        disabled={loading || disabled} 
         className="w-full"
       >
         {loading ? (
           <>
             <Loader2 className="h-4 w-4 mr-2 animate-spin" />
             Processing Payment...
+          </>
+        ) : disabled ? (
+          <>
+            <CheckCircle className="h-4 w-4 mr-2" />
+            Payment Processed
           </>
         ) : (
           <>
@@ -187,24 +375,6 @@ const CheckoutForm = ({ order, paymentIntent, onSuccess, onError }) => {
         )}
       </Button>
     </form>
-    
-    {/* Debug button for testing payment success */}
-    <div className="mt-4">
-      <Button
-        type="button"
-        onClick={() => {
-          console.log('🔧 Manual payment success trigger clicked');
-          console.log('🔧 Order data:', order);
-          console.log('🔧 Payment intent data:', paymentIntent);
-          onSuccess();
-        }}
-        className="w-full bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white font-medium py-2 px-4 rounded-lg transition-all duration-200"
-        variant="outline"
-      >
-        🔧 Test Payment Success (Debug)
-      </Button>
-    </div>
-    </>
   );
 };
 
@@ -219,6 +389,9 @@ const Checkout = () => {
   const [appliedPromotion, setAppliedPromotion] = useState(null);
   const [validatingPromotion, setValidatingPromotion] = useState(false);
   const [paymentSuccess, setPaymentSuccess] = useState(false);
+  const [partialSuccess, setPartialSuccess] = useState(false);
+  const [retryingActivation, setRetryingActivation] = useState(false);
+  const [paymentProcessed, setPaymentProcessed] = useState(false);
 
   // Get promotion code from URL if present
   useEffect(() => {
@@ -475,35 +648,75 @@ const Checkout = () => {
 
   const validatePromotionCode = async () => {
     if (!promotionCode.trim()) {
-      toast.error('Please enter a promotion code');
+      toast.error('Please enter a referral code');
       return;
     }
 
     try {
       setValidatingPromotion(true);
       
-      // Use imported security service
+      console.log('🔍 Validating referral code:', promotionCode);
+      console.log('🔍 Order amount:', order.subtotal || order.total_amount);
       
-      // Create secure promotion validation request
-      const response = await securityService.createSecurePaymentRequest('/payments/validate-promotion', {
-        code: promotionCode,
-        order_amount: order.subtotal
+      // Use the new referral code validation endpoint (public endpoint)
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/admin/referral-codes/validate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          code: promotionCode.trim(),
+          amount: order.subtotal || order.total_amount || 99.99,
+          plan_id: 'premium'
+        }),
       });
 
       if (response.ok) {
         const data = await response.json();
-        setAppliedPromotion(data.promotion);
-        toast.success(`Promotion applied! ${(data.discount_amount || 0).toFixed(2)} discount`);
+        console.log('✅ Referral code validation successful:', data);
         
-        // Recreate order with promotion
-        await createTestOrder();
+        if (data.success) {
+          // Set the applied promotion with referral code data
+          const promotionData = {
+            name: data.data.code,
+            value: data.data.discount_percent,
+            type: 'percentage',
+            is_affiliate_code: data.data.is_affiliate_code,
+            affiliate_name: data.data.affiliate_name,
+            discount_amount: data.data.discount_amount,
+            discounted_total: data.data.discounted_total
+          };
+          
+          setAppliedPromotion(promotionData);
+          
+          // Show success message with affiliate info if applicable
+          if (data.data.is_affiliate_code && data.data.affiliate_name) {
+            toast.success(`Referral code applied! ${data.data.discount_percent}% off from ${data.data.affiliate_name}`);
+          } else {
+            toast.success(`Code applied! ${data.data.discount_percent}% discount`);
+          }
+          
+          // Update the order with the discount
+          const updatedOrder = {
+            ...order,
+            discount_amount: data.data.discount_amount,
+            total_amount: data.data.discounted_total,
+            promotion_code: promotionCode.trim()
+          };
+          
+          setOrder(updatedOrder);
+          
+        } else {
+          throw new Error(data.error || 'Invalid referral code');
+        }
       } else {
         const error = await response.json();
-        toast.error(error.error || 'Invalid promotion code');
+        console.error('❌ Referral code validation failed:', error);
+        toast.error(error.error || 'Invalid referral code');
       }
     } catch (error) {
-      console.error('Error validating promotion:', error);
-      toast.error('Failed to validate promotion code');
+      console.error('❌ Error validating referral code:', error);
+      toast.error('Failed to validate referral code. Please try again.');
     } finally {
       setValidatingPromotion(false);
     }
@@ -511,14 +724,20 @@ const Checkout = () => {
 
   const handlePaymentSuccess = async () => {
     setPaymentSuccess(true);
-    toast.success('Payment successful! Thank you for your purchase.');
+    toast.success('Payment successful! Processing your subscription...');
+    
+    let paymentProcessedSuccessfully = false;
+    let subscriptionUpdated = false;
     
     // Call payment success API to save payment and update user subscription
     if (order && order.id) {
       const paymentData = {
         order_id: order.id,
         payment_intent_id: paymentIntent?.payment_intent_id || paymentIntent?.id || `pi_stripe_${Date.now()}`,
-        customer_email: order.customer_email
+        customer_email: order.customer_email,
+        // Include referral code if applied
+        referral_code: order.promotion_code || promotionCode.trim() || null,
+        final_amount: order.total_amount
       };
       
       console.log('💾 Saving payment to database:', paymentData);
@@ -536,8 +755,10 @@ const Checkout = () => {
         if (response.ok) {
           const result = await response.json();
           console.log('✅ Payment saved successfully:', result);
+          paymentProcessedSuccessfully = true;
           
           if (result.subscription_updated) {
+            subscriptionUpdated = true;
             toast.success('Payment successful! Your subscription has been activated.');
             
             // Store order and user info for post-payment login
@@ -592,8 +813,16 @@ const Checkout = () => {
               console.log('⚠️ Could not update user data:', error);
             }
           } else {
-            toast.warning('Payment successful, but subscription activation failed. Please contact support.');
+            // Payment succeeded but subscription activation failed - partial success
+            setPartialSuccess(true);
+            setPaymentProcessed(true);
+            toast.warning('Payment successful, but subscription activation failed. We\'re working to fix this automatically.');
             console.error('❌ Payment succeeded but subscription was not updated:', result);
+            
+            // Try to retry subscription activation automatically
+            setTimeout(() => {
+              retrySubscriptionActivation(order);
+            }, 3000);
           }
         } else {
           const error = await response.json();
@@ -601,35 +830,95 @@ const Checkout = () => {
           console.error('❌ Response status:', response.status);
           console.error('❌ Response text:', await response.text());
           toast.error('Payment processed but failed to save. Please contact support.');
+          paymentProcessedSuccessfully = false;
         }
       } catch (error) {
         console.error('❌ Payment processing error:', error);
         toast.error('Payment processing failed. Please try again.');
+        paymentProcessedSuccessfully = false;
       }
     }
     
-    // Redirect to success page after 3 seconds
-    setTimeout(() => {
-      navigate('/payment-success', {
-        state: {
-          order: order,
-          paymentSuccess: true,
-          subscriptionUpdated: true
-        }
-      });
-    }, 3000);
+    // Only redirect to success page if payment was actually processed successfully
+    if (paymentProcessedSuccessfully && subscriptionUpdated) {
+      console.log('✅ Payment fully processed, redirecting to success page');
+      setTimeout(() => {
+        navigate('/payment-success', {
+          state: {
+            order: order,
+            paymentSuccess: true,
+            subscriptionUpdated: true
+          }
+        });
+      }, 3000);
+    } else {
+      console.log('❌ Payment processing failed, staying on checkout page');
+      setPaymentSuccess(false);
+      toast.error('Payment processing failed. Please try again or contact support.');
+    }
   };
 
   const handlePaymentError = (error) => {
     toast.error(`Payment failed: ${error}`);
   };
 
+  // Retry subscription activation for partial success scenarios
+  const retrySubscriptionActivation = async (order) => {
+    if (retryingActivation) return; // Prevent multiple retries
+    
+    setRetryingActivation(true);
+    console.log('🔄 Retrying subscription activation...');
+    
+    try {
+      // Wait a bit longer for database consistency
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      
+      // Force a fresh subscription status check
+      const freshStatus = await subscriptionService.checkSubscriptionStatus(true);
+      console.log('🔄 Retry - Fresh subscription status check:', freshStatus);
+      
+      if (freshStatus.hasActiveSubscription) {
+        console.log('✅ Retry successful - subscription is now active!');
+        setPartialSuccess(false);
+        setPaymentSuccess(true);
+        toast.success('Subscription activated successfully! Redirecting...');
+        
+        // Redirect to success page
+        setTimeout(() => {
+          navigate('/payment-success', {
+            state: {
+              order: order,
+              paymentSuccess: true,
+              subscriptionUpdated: true,
+              retrySuccess: true
+            }
+          });
+        }, 2000);
+      } else {
+        console.log('⚠️ Retry failed - subscription still not active');
+        toast.warning('Subscription activation is taking longer than expected. Please contact support if this persists.');
+      }
+    } catch (error) {
+      console.error('❌ Retry failed:', error);
+      toast.error('Failed to retry subscription activation. Please contact support.');
+    } finally {
+      setRetryingActivation(false);
+    }
+  };
+
+  // Manual retry function for user-initiated retries
+  const handleManualRetry = () => {
+    if (order) {
+      retrySubscriptionActivation(order);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
-          <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
-          <p>Setting up checkout...</p>
+          <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4 text-blue-600" />
+          <p className="text-gray-600 font-medium">Setting up checkout...</p>
         </div>
       </div>
     );
@@ -640,9 +929,9 @@ const Checkout = () => {
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <Card className="w-full max-w-md">
           <CardContent className="text-center p-8">
-            <CheckCircle className="h-16 w-16 text-green-500 mx-auto mb-4" />
+            <CheckCircle className="h-16 w-16 text-green-500 mx-auto mb-4 animate-pulse" />
             <h1 className="text-2xl font-bold text-gray-900 mb-2">Payment Successful!</h1>
-            <p className="text-gray-600 mb-4">Thank you for your purchase.</p>
+            <p className="text-gray-600 mb-4 font-medium">Thank you for your purchase. Your subscription is being activated...</p>
             <p className="text-sm text-gray-500">Redirecting to success page...</p>
           </CardContent>
         </Card>
@@ -747,6 +1036,7 @@ const Checkout = () => {
                     paymentIntent={paymentIntent}
                     onSuccess={handlePaymentSuccess}
                     onError={handlePaymentError}
+                    disabled={paymentProcessed}
                   />
                 ) : (
                   <div className="text-center p-8">
@@ -756,6 +1046,70 @@ const Checkout = () => {
                 )}
               </CardContent>
             </Card>
+
+            {/* Partial Success UI */}
+            {partialSuccess && (
+              <Card className="border-amber-200 bg-amber-50">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-amber-800">
+                    <CheckCircle className="h-5 w-5" />
+                    Payment Successful - Activating Subscription
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="text-amber-700">
+                    <p className="font-medium mb-2">✅ Your payment has been processed successfully!</p>
+                    <p className="text-sm mb-4">
+                      We're currently activating your subscription. This usually takes just a few moments, 
+                      but sometimes it can take a bit longer. Please don't close this page.
+                    </p>
+                  </div>
+                  
+                  {retryingActivation && (
+                    <div className="flex items-center gap-2 text-amber-600">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span className="text-sm">Retrying subscription activation...</span>
+                    </div>
+                  )}
+                  
+                  <div className="flex gap-2">
+                    <Button 
+                      onClick={handleManualRetry}
+                      disabled={retryingActivation}
+                      variant="outline"
+                      size="sm"
+                      className="border-amber-300 text-amber-700 hover:bg-amber-100"
+                    >
+                      {retryingActivation ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Retrying...
+                        </>
+                      ) : (
+                        'Try Again'
+                      )}
+                    </Button>
+                    
+                    <Button 
+                      onClick={() => window.location.href = '/contact'}
+                      variant="outline"
+                      size="sm"
+                      className="border-amber-300 text-amber-700 hover:bg-amber-100"
+                    >
+                      Contact Support
+                    </Button>
+                  </div>
+                  
+                  <div className="text-xs text-amber-600 bg-amber-100 p-3 rounded">
+                    <p className="font-medium mb-1">What's happening?</p>
+                    <p>
+                      Your payment was successful, but there was a temporary issue activating your subscription. 
+                      We're automatically retrying this process. If this persists, our support team can help you manually activate your account.
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
           </div>
 
           {/* Order Summary */}
@@ -783,42 +1137,61 @@ const Checkout = () => {
 
                 <hr />
 
-                {/* Promotion Code */}
-                <div className="space-y-3">
-                  <Label htmlFor="promotion-code">Promotion Code</Label>
+                {/* Referral Code - Enhanced */}
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Tag className="h-5 w-5 text-blue-600" />
+                    <Label htmlFor="promotion-code" className="text-sm font-semibold text-blue-900">
+                      Have a Referral Code?
+                    </Label>
+                  </div>
                   <div className="flex gap-2">
                     <Input
                       id="promotion-code"
                       value={promotionCode}
                       onChange={(e) => setPromotionCode(e.target.value.toUpperCase())}
-                      placeholder="Enter promotion code"
+                      placeholder="Enter referral code (e.g., STO0005)"
                       disabled={validatingPromotion}
+                      className="flex-1 font-mono"
                     />
                     <Button 
                       onClick={validatePromotionCode}
                       disabled={validatingPromotion || !promotionCode.trim()}
-                      variant="outline"
+                      className="bg-blue-600 hover:bg-blue-700 text-white"
                     >
                       {validatingPromotion ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       ) : (
-                        <Tag className="h-4 w-4" />
+                        'Apply'
                       )}
                     </Button>
                   </div>
                   
                   {appliedPromotion && (
-                    <div className="flex items-center gap-2 p-3 bg-green-50 border border-green-200 rounded-lg">
-                      <CheckCircle className="h-4 w-4 text-green-600" />
-                      <div>
-                        <p className="text-sm font-medium text-green-800">
-                          {appliedPromotion.name} applied
-                        </p>
-                        <p className="text-xs text-green-600">
-                          {appliedPromotion.value}
-                          {appliedPromotion.type === 'percentage' ? '%' : '$'} off
-                        </p>
+                    <div className="flex items-center justify-between p-3 bg-green-50 border border-green-200 rounded-lg">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle className="h-4 w-4 text-green-600" />
+                        <div>
+                          <p className="text-sm font-medium text-green-800">
+                            {appliedPromotion.name} applied
+                          </p>
+                          <p className="text-xs text-green-600">
+                            {appliedPromotion.value}
+                            {appliedPromotion.type === 'percentage' ? '%' : '$'} off
+                          </p>
+                        </div>
                       </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setAppliedPromotion(null);
+                          setPromotionCode('');
+                        }}
+                        className="text-green-600 hover:text-green-800"
+                      >
+                        <XCircle className="h-4 w-4" />
+                      </Button>
                     </div>
                   )}
                 </div>

@@ -28,7 +28,7 @@ class ErrorBoundary extends React.Component {
     });
 
     // Log error to console in development
-    if (process.env.NODE_ENV === 'development') {
+    if (import.meta.env.MODE === 'development') {
       console.error('Error Boundary caught an error:', error, errorInfo);
     }
 
@@ -117,7 +117,7 @@ class ErrorBoundary extends React.Component {
             
             <CardContent className="space-y-6">
               {/* Error Details (only in development) */}
-              {process.env.NODE_ENV === 'development' && this.state.error && (
+              {import.meta.env.MODE === 'development' && this.state.error && (
                 <div className="bg-muted p-4 rounded-lg">
                   <h4 className="font-semibold mb-2">Error Details (Development Only)</h4>
                   <div className="text-sm font-mono bg-background p-3 rounded border overflow-auto max-h-40">

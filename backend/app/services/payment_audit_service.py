@@ -219,5 +219,39 @@ class PaymentAuditService:
             logger.error(f"Failed to get audit logs: {str(e)}")
             return []
 
+    def log_promotion_validation(self, validation_data: Dict[str, Any]):
+        """Log promotion code validation"""
+        try:
+            audit_entry = {
+                'timestamp': datetime.utcnow().isoformat(),
+                'event_type': 'promotion_validation',
+                'code': validation_data.get('code', '')[:10] + '...',
+                'discount_amount': validation_data.get('discount_amount'),
+                'ip_address': validation_data.get('ip'),
+                'user_agent': self._get_user_agent()
+            }
+            
+            self._write_audit_log(audit_entry)
+            
+        except Exception as e:
+            logger.error(f"Failed to log promotion validation: {str(e)}")
+    
+    def log_promotion_usage(self, usage_data: Dict[str, Any]):
+        """Log promotion code usage in order creation"""
+        try:
+            audit_entry = {
+                'timestamp': datetime.utcnow().isoformat(),
+                'event_type': 'promotion_usage',
+                'code': usage_data.get('code', '')[:10] + '...',
+                'order_amount': usage_data.get('order_amount'),
+                'ip_address': usage_data.get('ip'),
+                'user_agent': self._get_user_agent()
+            }
+            
+            self._write_audit_log(audit_entry)
+            
+        except Exception as e:
+            logger.error(f"Failed to log promotion usage: {str(e)}")
+
 # Create singleton instance
 payment_audit_service = PaymentAuditService()

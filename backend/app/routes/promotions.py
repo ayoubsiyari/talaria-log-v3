@@ -10,7 +10,7 @@ import random
 promotions_bp = Blueprint('promotions_bp', __name__)
 
 @promotions_bp.route('', methods=['POST'])
-# @require_permission('promotions.management.create')  # Temporarily disabled for testing
+@require_permission('promotions.management.create')
 def create_promotion():
     """Create a new promotion."""
     data = request.get_json()

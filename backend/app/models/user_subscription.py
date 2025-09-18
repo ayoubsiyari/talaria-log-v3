@@ -12,10 +12,10 @@ class SubscriptionStatus(enum.Enum):
     EXPIRED = "expired"
 
 class BillingCycle(enum.Enum):
-    MONTHLY = "monthly"
-    QUARTERLY = "quarterly"
-    ANNUALLY = "annually"
-    BIENNIALLY = "biennially"
+    MONTHLY = "MONTHLY"
+    QUARTERLY = "QUARTERLY"
+    ANNUALLY = "ANNUALLY"
+    BIENNIALLY = "BIENNIALLY"
 
 class UserSubscription(db.Model):
     """User Subscription model linking users to their subscription plans"""

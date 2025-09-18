@@ -5,6 +5,7 @@ Handles payment security validation and fraud detection
 
 import re
 import time
+import threading
 from typing import Dict, Any, Tuple, Optional
 from datetime import datetime, timedelta
 from flask import current_app
@@ -16,10 +17,18 @@ class PaymentSecurityService:
     """Payment security service for validation and fraud detection"""
     
     def __init__(self):
+        # Thread safety for rate limiting
+        self._rate_limit_lock = threading.Lock()
+        
         self.suspicious_ips = set()
-        self.rate_limits = {}  # IP -> {count, last_request}
-        self.max_requests_per_minute = 10
+        self.rate_limits = {}  # IP -> {count, last_request, window_start}
+        self.user_rate_limits = {}  # user_id -> {count, last_request, window_start}
+        self.max_requests_per_minute = 5  # Reduced for security
+        self.max_requests_per_hour = 50
+        self.max_requests_per_day = 200
         self.blocked_ips = set()
+        self.blocked_users = set()
+        self.rate_limit_window = 60  # seconds
         
     def validate_payment_data(self, data: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
         """Validate payment data for security and completeness"""
@@ -141,31 +150,84 @@ class PaymentSecurityService:
         except Exception:
             return False
     
-    def _check_rate_limit(self) -> bool:
-        """Check if request is within rate limits"""
+    def _check_rate_limit(self, user_id: Optional[int] = None) -> bool:
+        """Check if request is within rate limits (IP and user-based)"""
         try:
             from flask import request
             client_ip = request.remote_addr
-            
             current_time = time.time()
             
-            # Clean old entries
-            self.rate_limits = {
-                ip: data for ip, data in self.rate_limits.items()
-                if current_time - data['last_request'] < 60
-            }
+            # Validate user_id if provided
+            if user_id is not None and user_id <= 0:
+                logger.warning(f"Invalid user_id provided: {user_id}")
+                return False
             
-            # Check current IP
-            if client_ip in self.rate_limits:
-                if self.rate_limits[client_ip]['count'] >= self.max_requests_per_minute:
-                    return False
-                self.rate_limits[client_ip]['count'] += 1
-            else:
-                self.rate_limits[client_ip] = {'count': 1, 'last_request': current_time}
+            with self._rate_limit_lock:
+                # Clean old entries
+                self.rate_limits = {
+                    ip: data for ip, data in self.rate_limits.items()
+                    if current_time - data['last_request'] < 3600  # Keep for 1 hour
+                }
+                
+                if user_id:
+                    self.user_rate_limits = {
+                        uid: data for uid, data in self.user_rate_limits.items()
+                        if current_time - data['last_request'] < 3600
+                    }
+                
+                # Check IP rate limit
+                if client_ip in self.rate_limits:
+                    ip_data = self.rate_limits[client_ip]
+                    
+                    # Reset window if needed
+                    if current_time - ip_data['window_start'] > self.rate_limit_window:
+                        ip_data['count'] = 0
+                        ip_data['window_start'] = current_time
+                    
+                    # Check if limit exceeded (before incrementing)
+                    if ip_data['count'] >= self.max_requests_per_minute:
+                        logger.warning(f"IP rate limit exceeded: {client_ip}")
+                        return False
+                    
+                    # Increment count after check
+                    ip_data['count'] += 1
+                    ip_data['last_request'] = current_time
+                else:
+                    self.rate_limits[client_ip] = {
+                        'count': 1, 
+                        'last_request': current_time,
+                        'window_start': current_time
+                    }
+                
+                # Check user rate limit if user_id provided
+                if user_id:
+                    if user_id in self.user_rate_limits:
+                        user_data = self.user_rate_limits[user_id]
+                        
+                        # Reset window if needed
+                        if current_time - user_data['window_start'] > self.rate_limit_window:
+                            user_data['count'] = 0
+                            user_data['window_start'] = current_time
+                        
+                        # Check if limit exceeded (before incrementing)
+                        if user_data['count'] >= self.max_requests_per_minute:
+                            logger.warning(f"User rate limit exceeded: {user_id}")
+                            return False
+                        
+                        # Increment count after check
+                        user_data['count'] += 1
+                        user_data['last_request'] = current_time
+                    else:
+                        self.user_rate_limits[user_id] = {
+                            'count': 1,
+                            'last_request': current_time,
+                            'window_start': current_time
+                        }
             
             return True
             
-        except Exception:
+        except Exception as e:
+            logger.error(f"Rate limiting error: {str(e)}")
             return True  # Allow request if rate limiting fails
     
     def log_payment_attempt(self, data: Dict[str, Any], success: bool, error_message: str = None):
@@ -190,19 +252,90 @@ class PaymentSecurityService:
             logger.error(f"Failed to log payment attempt: {str(e)}")
     
     def generate_payment_token(self, order_id: int) -> str:
-        """Generate a secure payment token"""
+        """Generate a cryptographically secure payment token"""
         import secrets
         import hashlib
+        import hmac
+        import base64
         
-        # Create a secure token based on order ID and timestamp
+        # Create a secure token using HMAC with secret key
+        secret_key = current_app.config.get('SECRET_KEY')
+        if not secret_key:
+            raise ValueError("SECRET_KEY must be configured for secure token generation")
+        
         timestamp = str(int(time.time()))
-        random_data = secrets.token_hex(16)
+        random_data = secrets.token_hex(16)  # Reduced for readability
+        
+        # Create HMAC-based token for integrity
         token_data = f"{order_id}:{timestamp}:{random_data}"
+        token_signature = hmac.new(
+            secret_key.encode(),
+            token_data.encode(),
+            hashlib.sha256
+        ).hexdigest()
         
-        # Hash the token data
-        token_hash = hashlib.sha256(token_data.encode()).hexdigest()
+        # Combine data with signature for verification (verifiable token)
+        secure_token = f"{token_data}:{token_signature}"
         
-        return f"pay_{token_hash[:32]}"
+        # Encode as base64 for URL safety
+        encoded_token = base64.urlsafe_b64encode(secure_token.encode()).decode()
+        
+        return f"pay_{encoded_token}"
+    
+    def verify_payment_token(self, token: str, order_id: int) -> bool:
+        """Verify a payment token"""
+        try:
+            import base64
+            import hmac
+            import hashlib
+            
+            if not token.startswith('pay_'):
+                return False
+            
+            # Decode the token
+            encoded_token = token[4:]  # Remove 'pay_' prefix
+            try:
+                decoded_token = base64.urlsafe_b64decode(encoded_token.encode()).decode()
+            except Exception:
+                return False
+            
+            # Split token data and signature
+            if ':' not in decoded_token:
+                return False
+            
+            # Find the last colon (separates data from signature)
+            last_colon = decoded_token.rfind(':')
+            if last_colon == -1:
+                return False
+            
+            token_data = decoded_token[:last_colon]
+            token_signature = decoded_token[last_colon + 1:]
+            
+            # Verify the signature
+            secret_key = current_app.config.get('SECRET_KEY')
+            if not secret_key:
+                return False
+            
+            expected_signature = hmac.new(
+                secret_key.encode(),
+                token_data.encode(),
+                hashlib.sha256
+            ).hexdigest()
+            
+            # Constant-time comparison to prevent timing attacks
+            if not hmac.compare_digest(token_signature, expected_signature):
+                return False
+            
+            # Verify the order_id matches
+            if ':' not in token_data:
+                return False
+            
+            token_order_id = int(token_data.split(':')[0])
+            return token_order_id == order_id
+            
+        except Exception as e:
+            logger.error(f"Token verification failed: {str(e)}")
+            return False
     
     def detect_suspicious_activity(self) -> bool:
         """Detect if current request is suspicious"""

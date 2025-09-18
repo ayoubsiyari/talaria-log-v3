@@ -40,10 +40,16 @@ const RevenueAnalytics = () => {
   const fetchAnalyticsData = async () => {
     setLoading(true);
     try {
+      const token = localStorage.getItem('access_token');
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      };
+      
       const [paymentStatsRes, ordersRes, invoicesRes] = await Promise.all([
-        fetch('http://localhost:5000/api/payments/stats'),
-        fetch('http://localhost:5000/api/payments/orders?page=1&per_page=200'),
-        fetch('http://localhost:5000/api/payments/invoices?page=1&per_page=200')
+        fetch('http://localhost:5000/api/payments/stats', { headers }),
+        fetch('http://localhost:5000/api/payments/orders?page=1&per_page=200', { headers }),
+        fetch('http://localhost:5000/api/payments/invoices?page=1&per_page=200', { headers })
       ]);
 
       let paymentData = null;
@@ -52,17 +58,26 @@ const RevenueAnalytics = () => {
 
       if (paymentStatsRes.ok) {
         paymentData = await paymentStatsRes.json();
+        console.log('Payment stats data:', paymentData);
         setPaymentStats(paymentData);
+      } else {
+        console.error('Failed to fetch payment stats:', paymentStatsRes.status, paymentStatsRes.statusText);
       }
 
       if (ordersRes.ok) {
         ordersData = await ordersRes.json();
+        console.log('Orders data:', ordersData);
         setOrders(ordersData.orders || []);
+      } else {
+        console.error('Failed to fetch orders:', ordersRes.status, ordersRes.statusText);
       }
 
       if (invoicesRes.ok) {
         invoicesData = await invoicesRes.json();
+        console.log('Invoices data:', invoicesData);
         setInvoices(invoicesData.invoices || []);
+      } else {
+        console.error('Failed to fetch invoices:', invoicesRes.status, invoicesRes.statusText);
       }
 
       // Generate analytics data using the parsed data

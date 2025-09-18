@@ -61,9 +61,11 @@ const PaymentDisputes = () => {
         if (value) params.append(key, value);
       });
 
+      const token = localStorage.getItem('access_token');
       const response = await fetch(`${API_BASE_URL}/payments/search-payments?${params}`, {
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         }
       });
 
@@ -85,10 +87,12 @@ const PaymentDisputes = () => {
   const handleVerifyPayment = async (paymentIntentId, customerEmail, amount) => {
     try {
       setLoading(true);
+      const token = localStorage.getItem('access_token');
       const response = await fetch(`${API_BASE_URL}/payments/verify-payment`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
           payment_intent_id: paymentIntentId,
@@ -115,10 +119,12 @@ const PaymentDisputes = () => {
   const handleResolveDispute = async () => {
     try {
       setLoading(true);
+      const token = localStorage.getItem('access_token');
       const response = await fetch(`${API_BASE_URL}/payments/resolve-payment-dispute`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify(resolutionForm)
       });

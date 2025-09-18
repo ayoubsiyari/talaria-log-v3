@@ -108,11 +108,17 @@ export default function AnalyticsReporting({ onNavigate }) {
   const fetchAnalyticsData = async () => {
     setLoading(true)
     try {
+      const token = localStorage.getItem('access_token')
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      }
+      
       const [paymentStatsRes, ordersRes, invoicesRes, countriesRes] = await Promise.all([
-        fetch('http://localhost:5000/api/payments/stats'),
-        fetch('http://localhost:5000/api/payments/orders?page=1&per_page=200'),
-        fetch('http://localhost:5000/api/payments/invoices?page=1&per_page=200'),
-        fetch('http://localhost:5000/api/payments/user-countries')
+        fetch('http://localhost:5000/api/payments/stats', { headers }),
+        fetch('http://localhost:5000/api/payments/orders?page=1&per_page=200', { headers }),
+        fetch('http://localhost:5000/api/payments/invoices?page=1&per_page=200', { headers }),
+        fetch('http://localhost:5000/api/payments/user-countries', { headers })
       ])
 
       let paymentData = null
@@ -122,22 +128,34 @@ export default function AnalyticsReporting({ onNavigate }) {
 
       if (paymentStatsRes.ok) {
         paymentData = await paymentStatsRes.json()
+        console.log('Analytics - Payment stats data:', paymentData)
         setPaymentStats(paymentData)
+      } else {
+        console.error('Failed to fetch payment stats:', paymentStatsRes.status, paymentStatsRes.statusText)
       }
 
       if (ordersRes.ok) {
         ordersData = await ordersRes.json()
+        console.log('Analytics - Orders data:', ordersData)
         setOrders(ordersData.orders || [])
+      } else {
+        console.error('Failed to fetch orders:', ordersRes.status, ordersRes.statusText)
       }
 
       if (invoicesRes.ok) {
         invoicesData = await invoicesRes.json()
+        console.log('Analytics - Invoices data:', invoicesData)
         setInvoices(invoicesData.invoices || [])
+      } else {
+        console.error('Failed to fetch invoices:', invoicesRes.status, invoicesRes.statusText)
       }
 
       if (countriesRes.ok) {
         countriesData = await countriesRes.json()
+        console.log('Analytics - Countries data:', countriesData)
         setGeographicData(countriesData.countries || [])
+      } else {
+        console.error('Failed to fetch countries:', countriesRes.status, countriesRes.statusText)
       }
 
       // Generate analytics data using the parsed data

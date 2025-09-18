@@ -16,9 +16,12 @@ class SubscriptionService:
     
     @staticmethod
     def get_active_plans():
-        """Get all active subscription plans"""
+        """Get all active subscription plans visible to regular users"""
         try:
-            return SubscriptionPlan.query.filter_by(is_active=True).order_by(SubscriptionPlan.sort_order).all()
+            return SubscriptionPlan.query.filter_by(
+                is_active=True, 
+                visible_to_regular_users=True
+            ).order_by(SubscriptionPlan.sort_order).all()
         except Exception as e:
             logger.error(f"Error getting active plans: {e}")
             return []
@@ -37,7 +40,7 @@ class SubscriptionService:
         """Create a new subscription plan"""
         try:
             # Validate billing cycle
-            billing_cycle = data.get('billing_cycle', 'monthly')
+            billing_cycle = data.get('billing_cycle', 'MONTHLY')
             if billing_cycle not in [bc.value for bc in BillingCycle]:
                 raise ValueError(f"Invalid billing cycle: {billing_cycle}")
             

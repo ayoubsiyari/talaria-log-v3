@@ -13,18 +13,15 @@ import {
   Crown,
   TrendingUp,
   Headphones,
-  Tag,
-  X
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { API_BASE_URL } from '@/config/config';
 import securityService from '../services/securityService';
 import { getUserData, getUserEmail } from '../utils/userUtils';
+import logger from '../utils/logger';
 
 const SubscriptionSelection = () => {
   const navigate = useNavigate();
@@ -34,10 +31,6 @@ const SubscriptionSelection = () => {
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [processing, setProcessing] = useState(false);
   const [billingCycle, setBillingCycle] = useState('monthly');
-  const [couponCode, setCouponCode] = useState('');
-  const [appliedCoupon, setAppliedCoupon] = useState(null);
-  const [showCouponInput, setShowCouponInput] = useState(false);
-  const [validatingCoupon, setValidatingCoupon] = useState(false);
 
   useEffect(() => {
     fetchPlans();
@@ -63,7 +56,7 @@ const SubscriptionSelection = () => {
         toast.error('Failed to load subscription plans');
       }
     } catch (error) {
-      console.error('Error fetching plans:', error);
+      logger.error('Error fetching plans:', error);
       toast.error('Failed to load subscription plans');
     } finally {
       setLoading(false);
@@ -74,61 +67,11 @@ const SubscriptionSelection = () => {
     setSelectedPlan(plan);
   };
 
-  const validateCoupon = async () => {
-    if (!couponCode.trim()) {
-      toast.error('Please enter a coupon code');
-      return;
-    }
-
-    try {
-      setValidatingCoupon(true);
-      const response = await fetch(`${API_BASE_URL}/payments/validate-promotion`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('access_token')}`
-        },
-        body: JSON.stringify({
-          code: couponCode.trim().toUpperCase(),
-          order_amount: selectedPlan ? selectedPlan.price : 99.99
-        })
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        setAppliedCoupon(data.promotion);
-        toast.success(`Promotion applied! ${(data.discount_amount || 0).toFixed(2)} discount`);
-        setShowCouponInput(false);
-      } else {
-        const error = await response.json();
-        toast.error(error.error || 'Invalid promotion code');
-      }
-    } catch (error) {
-      console.error('Error validating coupon:', error);
-      toast.error('Failed to validate coupon');
-    } finally {
-      setValidatingCoupon(false);
-    }
-  };
-
-  const removeCoupon = () => {
-    setAppliedCoupon(null);
-    setCouponCode('');
-  };
 
   const calculatePrice = (plan) => {
     if (!plan) return 0;
     
     let price = billingCycle === 'yearly' ? plan.price * 12 * 0.8 : plan.price;
-    
-    if (appliedCoupon) {
-      if (appliedCoupon.type === 'percentage') {
-        const discount = price * (appliedCoupon.value / 100);
-        price = price - discount;
-      } else if (appliedCoupon.type === 'fixed') {
-        price = Math.max(0, price - appliedCoupon.value);
-      }
-    }
     
     return price;
   };
@@ -144,19 +87,23 @@ const SubscriptionSelection = () => {
       
       // Get user data using utility function
       let userData = getUserData(); // Remove await since it's synchronous
-      const accessToken = localStorage.getItem('access_token');
+      const access_token = localStorage.getItem('access_token');
       
-      console.log('🔑 Access token available:', !!accessToken);
-      console.log('👤 User data available:', !!userData?.email);
-      console.log('📧 User email:', userData?.email);
-      console.log('📋 Full user data:', userData);
+      // Secure logging with centralized logger
+      logger.debug('Access token available', { hasToken: !!access_token });
+      logger.debug('User data available', { 
+        hasEmail: !!userData?.email,
+        hasUsername: !!userData?.username,
+        hasFirstName: !!userData?.first_name,
+        hasLastName: !!userData?.last_name
+      });
       
       // If we still don't have user data, try to get it from the API
       if (!userData || !userData.email) {
-        console.log('⚠️ No user data in localStorage, trying to get from API...');
+        logger.debug('No user data in localStorage, trying to get from API');
         
-        if (!accessToken) {
-          console.error('❌ No access token available');
+        if (!access_token) {
+          logger.error('No access token available');
           toast.error('Please log in to continue with your subscription');
           navigate('/login');
           return;
@@ -166,14 +113,14 @@ const SubscriptionSelection = () => {
           // Try to get user data from API
           const response = await fetch(`${API_BASE_URL}/auth/me`, {
             headers: {
-              'Authorization': `Bearer ${accessToken}`,
+              'Authorization': `Bearer ${access_token}`,
               'Content-Type': 'application/json'
             }
           });
           
           if (response.ok) {
             const apiUserData = await response.json();
-            console.log('✅ Got user data from API:', apiUserData);
+            logger.debug('Got user data from API - user authenticated successfully');
             
             // Update localStorage with API data
             localStorage.setItem('user', JSON.stringify(apiUserData));
@@ -181,13 +128,13 @@ const SubscriptionSelection = () => {
             // Use the API data
             userData = apiUserData;
           } else {
-            console.error('❌ Failed to get user data from API');
+            logger.error('Failed to get user data from API');
             toast.error('Please log in to continue with your subscription');
             navigate('/login');
             return;
           }
         } catch (apiError) {
-          console.error('❌ API error getting user data:', apiError);
+          logger.error('API error getting user data:', apiError);
           toast.error('Please log in to continue with your subscription');
           navigate('/login');
           return;
@@ -196,7 +143,7 @@ const SubscriptionSelection = () => {
       
       // If we still don't have user data after all attempts, redirect to registration
       if (!userData || !userData.email) {
-        console.log('⚠️ No user data available, redirecting to registration');
+        logger.debug('No user data available, redirecting to registration');
         toast.error('Please register first to select a subscription plan');
         navigate('/register');
         return;
@@ -204,34 +151,34 @@ const SubscriptionSelection = () => {
       
       // For users coming from registration, we don't need authentication tokens
       // We'll create the order without authentication and handle login after payment
-      console.log('✅ Using user data from registration for order creation');
+      logger.debug('Using user data from registration for order creation');
       
       // Create order with payment intent
       const orderData = {
         customer_email: userData.email,
         customer_name: userData.username || userData.first_name || userData.last_name || userData.email.split('@')[0],
+        plan_id: selectedPlan.id, // Include plan ID for reliable matching
         items: [
           {
             name: `${selectedPlan.name} Subscription`,
             price: parseFloat(selectedPlan.price) || 99.99,
             quantity: 1,
-            description: selectedPlan.description || `${selectedPlan.name} plan`
+            description: selectedPlan.description || `${selectedPlan.name} plan`,
+            plan_id: selectedPlan.id // Also include plan ID in item
           }
-        ],
-        promotion_code: appliedCoupon?.code
+        ]
       };
       
-      console.log('📝 Creating order with user data:', {
-        customer_email: orderData.customer_email,
-        customer_name: orderData.customer_name,
-        userData: userData,
-        orderData: orderData,
-        selectedPlan: selectedPlan,
-        priceType: typeof selectedPlan.price,
-        priceValue: selectedPlan.price
+      logger.debug('Creating order with data', {
+        hasCustomerEmail: !!orderData.customer_email,
+        hasCustomerName: !!orderData.customer_name,
+        hasUserData: !!userData,
+        selectedPlanId: selectedPlan?.id,
+        priceType: typeof selectedPlan?.price,
+        priceValue: selectedPlan?.price
       });
 
-      console.log('🌐 Making API call to:', `${API_BASE_URL}/payments/create-order`);
+      logger.debug('Making API call to create order', { endpoint: `${API_BASE_URL}/payments/create-order` });
       
       // Import security service
       // Use imported security service
@@ -242,8 +189,35 @@ const SubscriptionSelection = () => {
         return;
       }
       
+      // Get CSRF token first
+      logger.debug('Getting CSRF token');
+      let csrfToken = null;
+      try {
+        const csrfResponse = await fetch(`${API_BASE_URL}/payments/csrf-token`, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          }
+        });
+        
+        if (csrfResponse.ok) {
+          const csrfData = await csrfResponse.json();
+          csrfToken = csrfData.csrf_token;
+          logger.debug('CSRF token obtained');
+        } else {
+          logger.warn('Failed to get CSRF token, proceeding without it');
+        }
+      } catch (csrfError) {
+        logger.warn('CSRF token error:', csrfError);
+      }
+
+      // Add CSRF token to order data
+      if (csrfToken) {
+        orderData.csrf_token = csrfToken;
+      }
+
       // Create payment request without authentication (for new users)
-      console.log('🌐 Making unauthenticated API call to:', `${API_BASE_URL}/payments/create-order`);
+      logger.debug('Making unauthenticated API call to create order', { endpoint: `${API_BASE_URL}/payments/create-order` });
       const response = await fetch(`${API_BASE_URL}/payments/create-order`, {
         method: 'POST',
         headers: {
@@ -252,21 +226,17 @@ const SubscriptionSelection = () => {
         body: JSON.stringify(orderData)
       });
       
-      console.log('📡 API response status:', response.status);
+      logger.debug('API response status', { status: response.status });
 
       if (response.ok) {
         const data = await response.json();
-        console.log('✅ Order created successfully:', data);
-        console.log('📋 Order details:', data.order);
-        console.log('💳 Payment intent:', data.payment_intent);
+        logger.debug('Order created successfully', {
+          hasOrder: !!data.order,
+          hasPaymentIntent: !!data.payment_intent
+        });
         
         // Navigate to checkout page with order data and user info
-        console.log('🚀 Navigating to checkout with data:', {
-          order: data.order,
-          clientSecret: data.payment_intent.client_secret,
-          plan: selectedPlan,
-          user: userData
-        });
+        logger.debug('Navigating to checkout with order data');
         
         navigate('/checkout', { 
           state: { 
@@ -278,12 +248,11 @@ const SubscriptionSelection = () => {
         });
       } else {
         const error = await response.json();
-        console.error('❌ Order creation error:', error);
-        console.error('Response status:', response.status);
+        logger.error('Order creation error', { error, status: response.status });
         toast.error(error.error || 'Failed to create order');
         
         // Fallback: navigate to checkout with test data
-        console.log('🔄 Fallback: Navigating to checkout with test data');
+        logger.debug('Fallback: Navigating to checkout with test data');
         toast.info('Using test mode - proceeding to checkout');
         navigate('/checkout', { 
           state: { 
@@ -294,12 +263,11 @@ const SubscriptionSelection = () => {
         });
       }
     } catch (error) {
-      console.error('❌ Network/API error creating order:', error);
-      console.error('Error details:', error.message);
+      logger.error('Network/API error creating order', { error: error.message });
       toast.error('Failed to create order - network error');
       
       // Fallback: navigate to checkout with test data
-      console.log('🔄 Catch block: Navigating to checkout with test data');
+      logger.debug('Catch block: Navigating to checkout with test data');
       toast.info('Using test mode - proceeding to checkout');
       navigate('/checkout', { 
         state: { 
@@ -344,8 +312,8 @@ const SubscriptionSelection = () => {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
         <div className="text-center">
-          <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
-          <p className="text-gray-600">Loading subscription plans...</p>
+          <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4 text-blue-600" />
+          <p className="text-gray-600 font-medium">Loading subscription plans...</p>
         </div>
       </div>
     );
@@ -400,7 +368,7 @@ const SubscriptionSelection = () => {
           {plans.map((plan) => (
             <Card
               key={plan.id}
-              className={`relative cursor-pointer transition-all duration-200 hover:shadow-lg ${
+              className={`relative cursor-pointer transition-all duration-200 hover:shadow-lg hover:border-blue-300 ${
                 selectedPlan?.id === plan.id
                   ? 'ring-2 ring-blue-500 shadow-lg scale-105'
                   : 'hover:scale-105'
@@ -494,74 +462,6 @@ const SubscriptionSelection = () => {
               </div>
             </div>
 
-            {/* Coupon Code Section */}
-            <div className="border-t pt-4">
-              {!showCouponInput && !appliedCoupon && (
-                <Button
-                  variant="outline"
-                  onClick={() => setShowCouponInput(true)}
-                  className="flex items-center gap-2"
-                >
-                  <Tag className="h-4 w-4" />
-                  Add Coupon Code
-                </Button>
-              )}
-
-              {showCouponInput && !appliedCoupon && (
-                <div className="flex gap-2">
-                  <div className="flex-1">
-                    <Label htmlFor="coupon" className="sr-only">Coupon Code</Label>
-                    <Input
-                      id="coupon"
-                      placeholder="Enter coupon code"
-                      value={couponCode}
-                      onChange={(e) => setCouponCode(e.target.value)}
-                      onKeyPress={(e) => e.key === 'Enter' && validateCoupon()}
-                    />
-                  </div>
-                  <Button
-                    onClick={validateCoupon}
-                    disabled={validatingCoupon}
-                    className="flex items-center gap-2"
-                  >
-                    {validatingCoupon ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Check className="h-4 w-4" />
-                    )}
-                    Apply
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setShowCouponInput(false);
-                      setCouponCode('');
-                    }}
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                </div>
-              )}
-
-              {appliedCoupon && (
-                <div className="flex items-center justify-between bg-green-50 p-3 rounded-lg">
-                  <div className="flex items-center gap-2">
-                    <Check className="h-4 w-4 text-green-600" />
-                    <span className="text-sm font-medium text-green-800">
-                      Coupon applied: {appliedCoupon.code} ({appliedCoupon.discount_percent}% off)
-                    </span>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={removeCoupon}
-                    className="text-green-600 hover:text-green-800"
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                </div>
-              )}
-            </div>
           </div>
         )}
 
@@ -570,7 +470,7 @@ const SubscriptionSelection = () => {
           <Button
             onClick={handleNext}
             disabled={!selectedPlan || processing}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 text-lg font-medium"
+            className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 text-lg font-medium shadow-lg hover:shadow-xl transition-all duration-200"
           >
             {processing ? (
               <>

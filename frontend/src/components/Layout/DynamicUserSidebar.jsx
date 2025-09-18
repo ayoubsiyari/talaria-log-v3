@@ -305,8 +305,10 @@ export default function DynamicUserSidebar({
   theme = 'light',
   onThemeToggle
 }) {
-  console.log('🚀 DynamicUserSidebar is being rendered!');
-  console.log('🚀 This is the NEW dynamic sidebar, not the old RegularUserSidebar');
+  if (import.meta.env.MODE !== 'production') {
+    console.log('🚀 DynamicUserSidebar is being rendered!');
+    console.log('🚀 This is the NEW dynamic sidebar, not the old RegularUserSidebar');
+  }
   const [searchQuery, setSearchQuery] = useState('')
   const [expandedGroups, setExpandedGroups] = useState({})
   const [showSearch, setShowSearch] = useState(false)
@@ -318,21 +320,33 @@ export default function DynamicUserSidebar({
     loading: subscriptionLoading,
     error: subscriptionError,
     refreshComponents,
+    forceRefreshComponents,
     getGroupedComponents,
     lastFetch,
     userPlan,
     planName
   } = useSimpleSubscriptionSidebar();
 
+  // Debug plan name
+  if (import.meta.env.MODE !== 'production') {
+    console.log('🔍 DynamicUserSidebar received planName:', planName);
+    console.log('🔍 DynamicUserSidebar received userPlan:', userPlan);
+  }
+
+  // Debug function to force refresh
+  const handleDebugRefresh = () => {
+    if (import.meta.env.MODE !== 'production') {
+      console.log('🔄 Manual debug refresh triggered');
+    }
+    forceRefreshComponents();
+  };
+
   // Convert subscription components to navigation items format
   const getSubscriptionNavigationItems = () => {
-    if (subscriptionLoading) {
-      console.log('DynamicUserSidebar - Subscription still loading, returning empty array');
-      return [];
-    }
-    
     if (!sidebarComponents.length) {
-      console.log('DynamicUserSidebar - No subscription components available, returning empty array');
+      if (import.meta.env.MODE !== 'production') {
+        console.log('DynamicUserSidebar - No subscription components available, returning empty array');
+      }
       return [];
     }
 
@@ -362,31 +376,43 @@ export default function DynamicUserSidebar({
 
   // Get navigation items based on subscription status
   const getNavigationItems = () => {
-    console.log('🔍 DynamicUserSidebar - Getting navigation items...');
-    console.log('🔍 Subscription loading:', subscriptionLoading);
-    console.log('🔍 Sidebar components:', sidebarComponents);
-    console.log('🔍 Components length:', sidebarComponents?.length);
-    console.log('🔍 Subscription error:', subscriptionError);
-    console.log('🔍 Last fetch:', lastFetch ? new Date(lastFetch).toLocaleTimeString() : 'Never');
+    if (import.meta.env.MODE !== 'production') {
+      console.log('🔍 DynamicUserSidebar - Getting navigation items...');
+      console.log('🔍 Subscription loading:', subscriptionLoading);
+      console.log('🔍 Sidebar components:', sidebarComponents);
+      console.log('🔍 Components length:', sidebarComponents?.length);
+      console.log('🔍 Subscription error:', subscriptionError);
+      console.log('🔍 Last fetch:', lastFetch ? new Date(lastFetch).toLocaleTimeString() : 'Never');
+      console.log('🔍 Plan name:', planName);
+      console.log('🔍 User plan:', userPlan);
+    }
 
     // If subscription components are available, use them ONLY
     if (sidebarComponents && sidebarComponents.length > 0) {
-      console.log('✅ Using subscription-based navigation ONLY');
-      console.log('📋 Subscription components:', sidebarComponents.map(c => c.id));
+      if (import.meta.env.MODE !== 'production') {
+        console.log('✅ Using subscription-based navigation ONLY');
+        console.log('📋 Subscription components:', sidebarComponents.map(c => c.id));
+      }
       const subscriptionItems = getSubscriptionNavigationItems();
-      console.log('📋 Generated subscription items:', subscriptionItems);
+      if (import.meta.env.MODE !== 'production') {
+        console.log('📋 Generated subscription items:', subscriptionItems);
+      }
       return subscriptionItems;
     }
 
     // Fallback to default components if subscription loading failed
-    console.log('⚠️ Using fallback navigation - no subscription components available');
-    console.log('📋 Fallback components: dashboard, journal, subscription, profile, help-support');
+    if (import.meta.env.MODE !== 'production') {
+      console.log('⚠️ Using fallback navigation - no subscription components available');
+      console.log('📋 Fallback components: dashboard, journal, subscription, profile, help-support');
+    }
     const fallbackItems = getDefaultNavigationItems();
-    console.log('📋 Generated fallback items:', fallbackItems);
+    if (import.meta.env.MODE !== 'production') {
+      console.log('📋 Generated fallback items:', fallbackItems);
+    }
     return fallbackItems;
   };
 
-  const navigationItems = useMemo(() => getNavigationItems(), [sidebarComponents, subscriptionLoading, subscriptionError]);
+  const navigationItems = useMemo(() => getNavigationItems(), [sidebarComponents]);
 
   // Initialize expanded groups only once
   useEffect(() => {
@@ -417,7 +443,7 @@ export default function DynamicUserSidebar({
         const item = allItems.find(i => i.shortcut === e.key.toUpperCase())
         if (item) {
           e.preventDefault()
-          onItemClick(item.id)
+          onItemClick(item.id, item.path || undefined)
         }
         if (e.key === 'k') {
           e.preventDefault()
@@ -517,8 +543,9 @@ export default function DynamicUserSidebar({
         )}
 
         {/* Navigation */}
-        <ScrollArea className="flex-1 sidebar-scroll">
+        <ScrollArea className="flex-1 sidebar-scroll min-h-0">
           <div className="p-4 space-y-8">
+           
             {filteredNavItems.map((group, groupIndex) => (
               <div key={group.group || groupIndex} className="sidebar-group group">
                 {!collapsed && group.group && (
@@ -561,7 +588,7 @@ export default function DynamicUserSidebar({
                                   ? "sidebar-item-active bg-gradient-to-r from-primary/20 via-primary/15 to-primary/10 text-primary-foreground shadow-md border border-primary/20 hover:shadow-lg" 
                                   : "hover:bg-sidebar-accent/50 hover:shadow-sm hover:border-sidebar-border/40"
                               )}
-                              onClick={() => onItemClick(item.id)}
+                              onClick={() => onItemClick(item.id, item.path || undefined)}
                               style={{
                                 animationDelay: `${itemIndex * 20}ms`
                               }}
@@ -652,18 +679,22 @@ export default function DynamicUserSidebar({
           "sidebar-user border-t border-sidebar-border/50 bg-gradient-to-r from-sidebar/40 via-sidebar/20 to-sidebar/10 relative overflow-hidden",
           collapsed ? "p-2" : "p-4"
         )}>
+         
           {/* Background decoration */}
           <div className="absolute inset-0 bg-gradient-to-r from-primary/5 via-transparent to-accent/5"></div>
           <div className="absolute bottom-0 left-0 w-24 h-24 bg-gradient-to-tr from-primary/10 to-transparent rounded-full blur-xl"></div>
           
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button variant="ghost" className={cn(
-                    "w-full h-auto rounded-xl hover:bg-sidebar-accent/50 transition-all duration-200 group relative z-10",
-                    collapsed ? "justify-center p-3" : "justify-start p-4"
-                  )}>
+              <Button variant="ghost" className={cn(
+                "w-full h-auto rounded-xl hover:bg-sidebar-accent/50 transition-all duration-200 group relative z-10",
+                collapsed ? "justify-center p-3" : "justify-start p-4"
+              )} onClick={() => {
+                if (import.meta.env.MODE !== 'production') {
+                  console.log('🔍 DynamicUserSidebar - User profile button clicked');
+                  console.log('🔍 Dropdown should open now');
+                }
+              }}>
                     <Avatar className={cn(
                       "ring-2 ring-sidebar-border/40 group-hover:ring-primary/50 transition-all duration-200 group-hover:scale-102",
                       collapsed ? "h-10 w-10" : "h-11 w-11 mr-4"
@@ -691,28 +722,25 @@ export default function DynamicUserSidebar({
                   <ChevronUp className="h-5 w-5 text-sidebar-foreground/60 group-hover:text-sidebar-foreground transition-colors" />
                 )}
                   </Button>
-                </TooltipTrigger>
-                {collapsed && (
-                  <TooltipContent side="right" className="bg-popover/95 backdrop-blur-sm border border-border/50 shadow-xl">
-                    <div className="p-2">
-                      <p className="font-semibold text-sm">{user.username || user.email?.split('@')[0] || 'User'}</p>
-                      <p className="text-xs text-muted-foreground">{user.email}</p>
-                    </div>
-                  </TooltipContent>
-                )}
-              </Tooltip>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-64 bg-popover/95 backdrop-blur-sm border border-border/50 shadow-2xl rounded-xl">
+            <DropdownMenuContent align="end" className="w-64 bg-popover/95 backdrop-blur-sm border border-border/50 shadow-2xl rounded-xl z-50">
               <DropdownMenuLabel className="text-foreground font-bold text-base px-3 py-2">My Account</DropdownMenuLabel>
               <DropdownMenuSeparator className="bg-border/50" />
-              <DropdownMenuItem onClick={() => onItemClick('profile')} className="hover:bg-accent/60 transition-all duration-200 px-3 py-2.5 rounded-lg mx-2">
+              <DropdownMenuItem onClick={() => {
+                if (import.meta.env.MODE !== 'production') {
+                  console.log('🔍 DynamicUserSidebar - Profile button clicked');
+                  console.log('🔍 onItemClick function:', onItemClick);
+                  console.log('🔍 Calling onItemClick("profile")');
+                }
+                onItemClick('profile', '/profile');
+              }} className="hover:bg-accent/60 transition-all duration-200 px-3 py-2.5 rounded-lg mx-2">
                 <User className="mr-3 h-5 w-5" />
                 <div>
                   <div className="font-medium">Profile Settings</div>
                   <div className="text-xs text-muted-foreground">Manage your account</div>
                 </div>
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => onItemClick('subscription')} className="hover:bg-accent/60 transition-all duration-200 px-3 py-2.5 rounded-lg mx-2">
+              <DropdownMenuItem onClick={() => onItemClick('subscription', '/subscription')} className="hover:bg-accent/60 transition-all duration-200 px-3 py-2.5 rounded-lg mx-2">
                 <CreditCard className="mr-3 h-5 w-5" />
                 <div>
                   <div className="font-medium">Subscription</div>

@@ -222,8 +222,6 @@ def get_users():
 
     except Exception as e:
         logger.error(f"Error getting all users: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
         return jsonify({'error': 'Failed to retrieve users', 'details': str(e)}), 500
 
 @admin_users_bp.route('/<int:user_id>/', methods=['GET'])
@@ -504,8 +502,6 @@ def delete_user(user_id):
         
     except Exception as e:
         logger.error(f"Error deleting user {user_id}: {e}")
-        import traceback
-        logger.error(f"Delete user traceback: {traceback.format_exc()}")
         db.session.rollback()
         return jsonify({'error': 'Failed to delete user', 'details': str(e)}), 500
 

@@ -57,6 +57,8 @@ const EnhancedSubscriptionManagement = () => {
     trial_price: '',
     is_popular: false,
     is_active: true,
+    visible_to_regular_users: true,
+    visible_to_admin_users: true,
     sort_order: ''
   });
 
@@ -89,8 +91,7 @@ const EnhancedSubscriptionManagement = () => {
         throw new Error('No authentication token found. Please log in first.');
       }
 
-      console.log('🔄 Loading subscription plans...');
-      const response = await fetch(`${API_BASE_URL}/subscription/plans`, {
+      const response = await fetch(`${API_BASE_URL}/admin/plans`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
@@ -99,7 +100,6 @@ const EnhancedSubscriptionManagement = () => {
 
       if (response.ok) {
         const data = await response.json();
-        console.log('✅ Loaded plans:', data.plans?.length || 0);
         setPlans(data.plans || []);
       } else {
         const errorData = await response.json();
@@ -142,8 +142,8 @@ const EnhancedSubscriptionManagement = () => {
       };
 
       const url = editingPlan 
-        ? `${API_BASE_URL}/subscription/plans/${editingPlan.id}`
-        : `${API_BASE_URL}/subscription/plans`;
+        ? `${API_BASE_URL}/admin/plans/${editingPlan.id}`
+        : `${API_BASE_URL}/admin/plans`;
 
       const method = editingPlan ? 'PUT' : 'POST';
 
@@ -186,7 +186,10 @@ const EnhancedSubscriptionManagement = () => {
 
   // Delete plan
   const deletePlan = async (planId) => {
-    if (!confirm('Are you sure you want to delete this plan? This action cannot be undone.')) {
+    const plan = plans.find(p => p.id === planId);
+    const planName = plan ? plan.name : 'this plan';
+    
+    if (!confirm(`Are you sure you want to deactivate "${planName}"?\n\nThis will:\n• Hide the plan from new users\n• Keep existing subscriptions active\n• Preserve all data for historical purposes\n\nYou can reactivate it later if needed.`)) {
       return;
     }
 
@@ -196,9 +199,7 @@ const EnhancedSubscriptionManagement = () => {
         throw new Error('No authentication token found');
       }
 
-      console.log('🔄 Deleting plan:', planId);
-
-      const response = await fetch(`${API_BASE_URL}/subscription/plans/${planId}`, {
+      const response = await fetch(`${API_BASE_URL}/admin/plans/${planId}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -207,15 +208,131 @@ const EnhancedSubscriptionManagement = () => {
       });
 
       if (response.ok) {
-        setPlans(plans.filter(plan => plan.id !== planId));
-        toast.success('Plan deleted successfully!');
+        const result = await response.json();
+        // Refresh the plans list to get updated data from server
+        loadPlans();
+        toast.success(result.message || 'Plan deactivated successfully!');
       } else {
         const errorData = await response.json();
         throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
       }
     } catch (err) {
-      console.error('❌ Error deleting plan:', err);
-      toast.error(`Failed to delete plan: ${err.message}`);
+      console.error('❌ Error deactivating plan:', err);
+      toast.error(`Failed to deactivate plan: ${err.message}`);
+    }
+  };
+
+  // Reactivate plan
+  const reactivatePlan = async (planId) => {
+    const plan = plans.find(p => p.id === planId);
+    const planName = plan ? plan.name : 'this plan';
+    
+    if (!confirm(`Are you sure you want to reactivate "${planName}"?\n\nThis will make the plan available for new subscriptions again.`)) return;
+
+    try {
+      const token = getAuthToken();
+      if (!token) {
+        throw new Error('No authentication token found');
+      }
+
+      const response = await fetch(`${API_BASE_URL}/admin/plans/${planId}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ...plan,
+          is_active: true,
+          visible_to_regular_users: true
+        }),
+      });
+
+      if (response.ok) {
+        // Refresh the plans list to get updated data from server
+        loadPlans();
+        toast.success(`Plan "${planName}" reactivated successfully!`);
+      } else {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+      }
+    } catch (err) {
+      console.error('❌ Error reactivating plan:', err);
+      toast.error(`Failed to reactivate plan: ${err.message}`);
+    }
+  };
+
+  // Hide plan from regular users
+  const hidePlan = async (planId) => {
+    const plan = plans.find(p => p.id === planId);
+    const planName = plan ? plan.name : 'this plan';
+    
+    if (!confirm(`Are you sure you want to hide "${planName}" from regular users?\n\nThis will:\n• Hide the plan from the subscription selector\n• Keep existing subscriptions active\n• Plan will still be visible to admins\n\nYou can show it again later if needed.`)) {
+      return;
+    }
+
+    try {
+      const token = getAuthToken();
+      if (!token) {
+        throw new Error('No authentication token found');
+      }
+
+      const response = await fetch(`${API_BASE_URL}/admin/plans/${planId}/hide`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.ok) {
+        // Refresh the plans list to get updated data from server
+        loadPlans();
+        toast.success(`Plan "${planName}" is now hidden from regular users!`);
+      } else {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+      }
+    } catch (err) {
+      console.error('❌ Error hiding plan:', err);
+      toast.error(`Failed to hide plan: ${err.message}`);
+    }
+  };
+
+  // Show plan to regular users
+  const showPlan = async (planId) => {
+    const plan = plans.find(p => p.id === planId);
+    const planName = plan ? plan.name : 'this plan';
+    
+    if (!confirm(`Are you sure you want to show "${planName}" to regular users?\n\nThis will make the plan available in the subscription selector again.`)) {
+      return;
+    }
+
+    try {
+      const token = getAuthToken();
+      if (!token) {
+        throw new Error('No authentication token found');
+      }
+
+      const response = await fetch(`${API_BASE_URL}/admin/plans/${planId}/show`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.ok) {
+        // Refresh the plans list to get updated data from server
+        loadPlans();
+        toast.success(`Plan "${planName}" is now visible to regular users!`);
+      } else {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+      }
+    } catch (err) {
+      console.error('❌ Error showing plan:', err);
+      toast.error(`Failed to show plan: ${err.message}`);
     }
   };
 
@@ -235,6 +352,8 @@ const EnhancedSubscriptionManagement = () => {
       trial_price: '',
       is_popular: false,
       is_active: true,
+      visible_to_regular_users: true,
+      visible_to_admin_users: true,
       sort_order: ''
     });
     setEditingPlan(null);
@@ -259,6 +378,8 @@ const EnhancedSubscriptionManagement = () => {
       trial_price: plan.trial_price ? plan.trial_price.toString() : '',
       is_popular: plan.is_popular || false,
       is_active: plan.is_active !== false,
+      visible_to_regular_users: plan.visible_to_regular_users !== false,
+      visible_to_admin_users: plan.visible_to_admin_users !== false,
       sort_order: plan.sort_order ? plan.sort_order.toString() : ''
     });
     setShowCreateDialog(true);
@@ -339,20 +460,28 @@ const EnhancedSubscriptionManagement = () => {
           ) : (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
               {plans.map((plan) => (
-                <Card key={plan.id} className="relative">
+                <Card key={plan.id} className={`relative ${!plan.is_active ? 'opacity-60 border-orange-200 bg-orange-50' : ''}`}>
                   <CardHeader>
                     <div className="flex items-center justify-between">
                       <CardTitle className="text-lg">{plan.name}</CardTitle>
                       <div className="flex items-center gap-2">
-                        {plan.is_popular && (
+                        {!plan.is_active && (
+                          <Badge variant="outline" className="bg-orange-100 text-orange-800 border-orange-300">
+                            <AlertCircle className="h-3 w-3 mr-1" />
+                            Inactive
+                          </Badge>
+                        )}
+                        {plan.is_popular && plan.is_active && (
                           <Badge variant="secondary">
                             <Star className="h-3 w-3 mr-1" />
                             Popular
                           </Badge>
                         )}
-                        <Badge variant={plan.is_active ? "default" : "secondary"}>
-                          {plan.is_active ? "Active" : "Inactive"}
-                        </Badge>
+                        {plan.is_active && (
+                          <Badge variant="default">
+                            Active
+                          </Badge>
+                        )}
                       </div>
                     </div>
                     <CardDescription>{plan.description}</CardDescription>
@@ -378,9 +507,13 @@ const EnhancedSubscriptionManagement = () => {
                         <Settings className="h-4 w-4 mr-2" />
                         {plan.sidebar_components?.length || 0} sidebar components
                       </div>
+                      <div className="flex items-center text-sm">
+                        <Eye className="h-4 w-4 mr-2" />
+                        {plan.visible_to_regular_users ? 'Visible to users' : 'Hidden from users'}
+                      </div>
                     </div>
 
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 flex-wrap">
                       <Button
                         variant="outline"
                         size="sm"
@@ -389,15 +522,52 @@ const EnhancedSubscriptionManagement = () => {
                         <Edit className="h-4 w-4 mr-1" />
                         Edit
                       </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => deletePlan(plan.id)}
-                        className="text-destructive hover:text-destructive"
-                      >
-                        <Trash2 className="h-4 w-4 mr-1" />
-                        Delete
-                      </Button>
+                      {plan.visible_to_regular_users ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => hidePlan(plan.id)}
+                          className="text-orange-600 hover:text-orange-700"
+                          title="Hide from regular users"
+                        >
+                          <EyeOff className="h-4 w-4 mr-1" />
+                          Hide
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => showPlan(plan.id)}
+                          className="text-green-600 hover:text-green-700"
+                          title="Show to regular users"
+                        >
+                          <Eye className="h-4 w-4 mr-1" />
+                          Show
+                        </Button>
+                      )}
+                      {plan.is_active ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => deletePlan(plan.id)}
+                          className="text-destructive hover:text-destructive"
+                          title="Deactivate plan"
+                        >
+                          <Trash2 className="h-4 w-4 mr-1" />
+                          Deactivate
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => reactivatePlan(plan.id)}
+                          className="text-green-600 hover:text-green-700"
+                          title="Reactivate plan"
+                        >
+                          <RefreshCw className="h-4 w-4 mr-1" />
+                          Reactivate
+                        </Button>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -645,6 +815,22 @@ const EnhancedSubscriptionManagement = () => {
                     onCheckedChange={(checked) => setFormData({ ...formData, is_popular: checked })}
                   />
                   <Label htmlFor="is_popular">Popular</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <Switch
+                    id="visible_to_regular_users"
+                    checked={formData.visible_to_regular_users}
+                    onCheckedChange={(checked) => setFormData({ ...formData, visible_to_regular_users: checked })}
+                  />
+                  <Label htmlFor="visible_to_regular_users">Visible to Regular Users</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <Switch
+                    id="visible_to_admin_users"
+                    checked={formData.visible_to_admin_users}
+                    onCheckedChange={(checked) => setFormData({ ...formData, visible_to_admin_users: checked })}
+                  />
+                  <Label htmlFor="visible_to_admin_users">Visible to Admin Users</Label>
                 </div>
               </div>
             </div>

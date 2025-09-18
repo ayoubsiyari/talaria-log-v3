@@ -8,8 +8,7 @@ from logging.config import fileConfig
 
 from alembic import context
 
-from app import create_app
-from app.extensions import db
+from app import create_app, db
 # Import all models to ensure they are registered with SQLAlchemy's metadata
 from app.models import *
 
@@ -59,7 +58,6 @@ def run_migrations_online():
             context.configure(
                 connection=connection,
                 target_metadata=target_metadata,
-                compare_type=True,
                 **conf_args
             )
 
