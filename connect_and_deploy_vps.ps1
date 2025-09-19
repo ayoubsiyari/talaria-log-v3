@@ -110,10 +110,9 @@ try {
     Write-Host "   1. Verify VPS IP and credentials" -ForegroundColor White
     Write-Host "   2. Check internet connection" -ForegroundColor White
     Write-Host "   3. Ensure PuTTY is installed" -ForegroundColor White
-    Write-Host "   4. Try manual connection: plink -ssh $Username@$VpsIp" -ForegroundColor White
-}
-
-Write-Host ""
+        Write-Host "   4. Try manual connection: plink -ssh $Username@$VpsIp" -ForegroundColor White
+    }
+} catch {
 Write-Host "📞 SSH Direct Connection Command:" -ForegroundColor Blue
 Write-Host "   ssh $Username@$VpsIp" -ForegroundColor White
 Write-Host ""
